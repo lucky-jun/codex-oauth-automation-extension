@@ -1,5 +1,5 @@
-// content/vps-panel.js — Content script for VPS panel (steps 1, 9)
-// Injected on: VPS panel (user-configured URL)
+// content/vps-panel.js — Content script for CPA panel (steps 1, 9)
+// Injected on: CPA panel (user-configured URL)
 //
 // Actual DOM structure (after login click):
 // <div class="card">
@@ -112,8 +112,8 @@ async function waitForExactSuccessBadge(timeout = 30000) {
 
   const finalText = getStatusBadgeText();
   throw new Error(finalText
-    ? `VPS 面板状态不是“认证成功！”，当前为“${finalText}”。`
-    : 'VPS 面板长时间未出现“认证成功！”状态徽标。');
+    ? `CPA 面板状态不是“认证成功！”，当前为“${finalText}”。`
+    : 'CPA 面板长时间未出现“认证成功！”状态徽标。');
 }
 
 function findManagementKeyInput() {
@@ -192,19 +192,19 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
     const managementLoginButton = findManagementLoginButton();
     if (managementKeyInput && managementLoginButton) {
       if (!vpsPassword) {
-        throw new Error('VPS 面板需要管理密钥，请先在侧边栏填写 VPS Key（管理密钥）。');
+        throw new Error('CPA 面板需要管理密钥，请先在侧边栏填写 CPA Key（管理密钥）。');
       }
 
       if ((managementKeyInput.value || '') !== vpsPassword) {
         await humanPause(350, 900);
         fillInput(managementKeyInput, vpsPassword);
-        log(`步骤 ${step}：已填写 VPS 管理密钥。`);
+        log(`步骤 ${step}：已填写 CPA 管理密钥。`);
       }
 
       const rememberCheckbox = findRememberPasswordCheckbox();
       if (rememberCheckbox && !rememberCheckbox.checked) {
         simulateClick(rememberCheckbox);
-        log(`步骤 ${step}：已勾选 VPS 面板“记住密码”。`);
+        log(`步骤 ${step}：已勾选 CPA 面板“记住密码”。`);
         await sleep(300);
       }
 
@@ -212,7 +212,7 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
         lastLoginAttemptAt = Date.now();
         await humanPause(350, 900);
         simulateClick(managementLoginButton);
-        log(`步骤 ${step}：已提交 VPS 管理登录。`);
+        log(`步骤 ${step}：已提交 CPA 管理登录。`);
       }
 
       await sleep(1500);
@@ -232,7 +232,7 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
     await sleep(250);
   }
 
-  throw new Error('无法进入 VPS 的 OAuth 管理页面，请检查面板是否正常加载。URL: ' + location.href);
+  throw new Error('无法进入 CPA 的 OAuth 管理页面，请检查面板是否正常加载。URL: ' + location.href);
 }
 
 // ============================================================
@@ -242,7 +242,7 @@ async function ensureOAuthManagementPage(vpsPassword, step = 1, timeout = 45000)
 async function step1_getOAuthLink(payload) {
   const { vpsPassword } = payload || {};
 
-  log('步骤 1：正在等待 VPS 面板加载并进入 OAuth 页面...');
+  log('步骤 1：正在等待 CPA 面板加载并进入 OAuth 页面...');
 
   const { header, authUrlEl: existingAuthUrlEl } = await ensureOAuthManagementPage(vpsPassword, 1);
   let authUrlEl = existingAuthUrlEl;
@@ -266,11 +266,11 @@ async function step1_getOAuthLink(payload) {
     } catch {
       throw new Error(
         '点击 OAuth 登录按钮后未出现授权链接。' +
-        '请检查 VPS 面板服务是否正在运行。URL: ' + location.href
+        '请检查 CPA 面板服务是否正在运行。URL: ' + location.href
       );
     }
   } else {
-    log('步骤 1：VPS 面板上已显示授权链接。');
+    log('步骤 1：CPA 面板上已显示授权链接。');
   }
 
   const oauthUrl = (authUrlEl.textContent || '').trim();
@@ -283,7 +283,7 @@ async function step1_getOAuthLink(payload) {
 }
 
 // ============================================================
-// Step 9: VPS Verify — paste localhost URL and submit
+// Step 9: CPA Verify — paste localhost URL and submit
 // ============================================================
 
 async function step9_vpsVerify(payload) {
@@ -312,7 +312,7 @@ async function step9_vpsVerify(payload) {
     try {
       urlInput = await waitForElement('input[placeholder*="localhost"]', 5000);
     } catch {
-      throw new Error('在 VPS 面板中未找到回调地址输入框。URL: ' + location.href);
+      throw new Error('在 CPA 面板中未找到回调地址输入框。URL: ' + location.href);
     }
   }
 

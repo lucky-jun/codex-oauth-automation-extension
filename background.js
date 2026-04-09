@@ -568,7 +568,7 @@ function getSourceLabel(source) {
   const labels = {
     'sidepanel': '侧边栏',
     'signup-page': '认证页',
-    'vps-panel': 'VPS 面板',
+    'vps-panel': 'CPA 面板',
     'qq-mail': 'QQ 邮箱',
     'mail-163': '163 邮箱',
     'inbucket-mail': 'Inbucket 邮箱',
@@ -1530,9 +1530,9 @@ async function resumeAutoRun() {
 
 async function executeStep1(state) {
   if (!state.vpsUrl) {
-    throw new Error('尚未配置 VPS 地址，请先在侧边栏填写。');
+    throw new Error('尚未配置 CPA 地址，请先在侧边栏填写。');
   }
-  await addLog('步骤 1：正在打开 VPS 面板...');
+  await addLog('步骤 1：正在打开 CPA 面板...');
   await reuseOrCreateTab('vps-panel', state.vpsUrl, {
     inject: ['content/utils.js', 'content/vps-panel.js'],
     reloadIfSameUrl: true,
@@ -1912,10 +1912,10 @@ async function executeStep5(state) {
 
 async function refreshOAuthUrlBeforeStep6(state) {
   if (!state.vpsUrl) {
-    throw new Error('尚未配置 VPS 地址，请先在侧边栏填写。');
+    throw new Error('尚未配置 CPA 地址，请先在侧边栏填写。');
   }
 
-  await addLog('步骤 6：正在刷新登录用的 OAuth 链接...');
+  await addLog('步骤 6：正在刷新登录用的 CPA OAuth 链接...');
   const waitForFreshOAuth = waitForStepComplete(1, 120000);
   await executeStep1(state);
   await waitForFreshOAuth;
@@ -2105,10 +2105,10 @@ async function executeStep9(state) {
     throw new Error('缺少 localhost 回调地址，请先完成步骤 8。');
   }
   if (!state.vpsUrl) {
-    throw new Error('尚未填写 VPS 地址，请先在侧边栏输入。');
+    throw new Error('尚未填写 CPA 地址，请先在侧边栏输入。');
   }
 
-  await addLog('步骤 9：正在打开 VPS 面板...');
+  await addLog('步骤 9：正在打开 CPA 面板...');
 
   let tabId = await getTabId('vps-panel');
   const alive = tabId && await isTabAlive('vps-panel');
