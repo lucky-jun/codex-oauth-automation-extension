@@ -7,50 +7,50 @@ const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
-const STEP7_RESTART_MAX_ROUNDS = 5;
+const STEP7_RESTART_MAX_ROUNDS = 8;
 
 initializeSessionStorageAccess();
 
 // ============================================================
-// State Management (chrome.storage.session + chrome.storage.local)
+// 状态管理（chrome.storage.session + chrome.storage.local）
 // ============================================================
 
 const PERSISTED_SETTING_DEFAULTS = {
-  vpsUrl: '',
-  vpsPassword: '',
-  customPassword: '',
-  autoRunSkipFailures: false,
-  mailProvider: '163',
-  inbucketHost: '',
-  inbucketMailbox: '',
+  vpsUrl: '', // VPS 面板地址，可手动填写。
+  vpsPassword: '', // VPS 面板登录密码，可手动填写。
+  customPassword: '', // 自定义账号密码；留空时由程序自动生成随机密码。
+  autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
+  mailProvider: '163', // 验证码邮箱来源，当前支持 163 / inbucket。
+  inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
+  inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
 };
 
 const PERSISTED_SETTING_KEYS = Object.keys(PERSISTED_SETTING_DEFAULTS);
 
 const DEFAULT_STATE = {
-  currentStep: 0,
+  currentStep: 0, // 当前流程执行到的步骤编号。
   stepStatuses: {
-    1: 'pending', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending',
+    1: 'pending', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending', // 运行时步骤状态映射，不要手动预填。
     6: 'pending', 7: 'pending', 8: 'pending', 9: 'pending',
   },
-  oauthUrl: null,
-  email: null,
-  password: null,
-  accounts: [], // { email, password, createdAt }
-  lastEmailTimestamp: null,
-  lastSignupCode: null,
-  lastLoginCode: null,
-  localhostUrl: null,
-  flowStartTime: null,
-  tabRegistry: {},
-  sourceLastUrls: {},
-  logs: [],
-  ...PERSISTED_SETTING_DEFAULTS,
-  autoRunning: false,
-  autoRunPhase: 'idle',
-  autoRunCurrentRun: 0,
-  autoRunTotalRuns: 1,
-  autoRunAttemptRun: 0,
+  oauthUrl: null, // 运行时抓取到的 OAuth 地址，不要手动预填。
+  email: null, // 运行时邮箱，由程序自动获取并写入，不能手动预填。
+  password: null, // 运行时实际密码，由 customPassword 或程序自动生成后写入。
+  accounts: [], // 已生成账号记录：{ email, password, createdAt }。
+  lastEmailTimestamp: null, // 最近一次获取到邮箱数据的运行时时间戳。
+  lastSignupCode: null, // 注册验证码，运行时由程序自动读取并写入。
+  lastLoginCode: null, // 登录验证码，运行时由程序自动读取并写入。
+  localhostUrl: null, // 运行时捕获到的 localhost 回调地址，不要手动预填。
+  flowStartTime: null, // 当前流程开始时间。
+  tabRegistry: {}, // 程序维护的标签页注册表。
+  sourceLastUrls: {}, // 各来源页面最近一次打开的地址记录。
+  logs: [], // 侧边栏展示的运行日志。
+  ...PERSISTED_SETTING_DEFAULTS, // 合并 chrome.storage.local 中持久化保存的用户配置。
+  autoRunning: false, // 当前是否处于自动运行中。
+  autoRunPhase: 'idle', // 当前自动运行阶段。
+  autoRunCurrentRun: 0, // 自动运行当前执行到第几轮。
+  autoRunTotalRuns: 1, // 自动运行计划总轮数。
+  autoRunAttemptRun: 0, // 当前轮次的重试序号。
 };
 
 async function getPersistedSettings() {
@@ -107,7 +107,7 @@ function broadcastDataUpdate(payload) {
   chrome.runtime.sendMessage({
     type: 'DATA_UPDATED',
     payload,
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 async function setEmailState(email) {
@@ -286,7 +286,7 @@ async function closeConflictingTabsForSource(source, currentUrl, options = {}) {
 
   if (!matchedIds.length) return;
 
-  await chrome.tabs.remove(matchedIds).catch(() => {});
+  await chrome.tabs.remove(matchedIds).catch(() => { });
 
   const registry = await getTabRegistry();
   if (registry[source]?.tabId && matchedIds.includes(registry[source].tabId)) {
@@ -310,7 +310,7 @@ async function closeTabsByUrlPrefix(prefix, options = {}) {
 
   if (!matchedIds.length) return 0;
 
-  await chrome.tabs.remove(matchedIds).catch(() => {});
+  await chrome.tabs.remove(matchedIds).catch(() => { });
   await addLog(`已关闭 ${matchedIds.length} 个匹配 ${prefix} 的 localhost 残留标签页。`, 'info');
   return matchedIds.length;
 }
@@ -602,7 +602,7 @@ async function addLog(message, level = 'info') {
   if (logs.length > 500) logs.splice(0, logs.length - 500);
   await setState({ logs });
   // Broadcast to side panel
-  chrome.runtime.sendMessage({ type: 'LOG_ENTRY', payload: entry }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'LOG_ENTRY', payload: entry }).catch(() => { });
 }
 
 function getSourceLabel(source) {
@@ -631,7 +631,7 @@ async function setStepStatus(step, status) {
   chrome.runtime.sendMessage({
     type: 'STEP_STATUS_CHANGED',
     payload: { step, status },
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 function isStopError(error) {
@@ -742,7 +742,7 @@ async function invalidateDownstreamAfterStepRestart(step, options = {}) {
       chrome.runtime.sendMessage({
         type: 'STEP_STATUS_CHANGED',
         payload: { step: downstream, status: 'pending' },
-      }).catch(() => {});
+      }).catch(() => { });
     }
     await addLog(`${logLabel}，已重置后续步骤状态：${changedSteps.join(', ')}`, 'warn');
   }
@@ -785,7 +785,7 @@ async function broadcastAutoRunStatus(phase, payload = {}) {
   chrome.runtime.sendMessage({
     type: 'AUTO_RUN_STATUS',
     payload: statusPayload,
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 function isAutoRunLockedState(state) {
@@ -914,7 +914,7 @@ async function clickWithDebugger(tabId, rect) {
       clickCount: 1,
     });
   } finally {
-    await chrome.debugger.detach(target).catch(() => {});
+    await chrome.debugger.detach(target).catch(() => { });
   }
 }
 
@@ -928,7 +928,7 @@ async function broadcastStopToContentScripts() {
         source: 'background',
         payload: {},
       });
-    } catch {}
+    } catch { }
   }
 }
 
@@ -1516,7 +1516,7 @@ async function autoRunLoop(totalRuns, options = {}) {
       };
       await resetState();
       await setState(keepSettings);
-      chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'AUTO_RUN_RESET' }).catch(() => { });
       await sleepWithStop(500);
     } else {
       await setState({
