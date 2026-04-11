@@ -234,18 +234,22 @@ function isLocalhostOAuthCallbackUrl(rawUrl) {
   if (!parsed) return false;
   if (!['http:', 'https:'].includes(parsed.protocol)) return false;
   if (!['localhost', '127.0.0.1'].includes(parsed.hostname)) return false;
-  if (parsed.pathname !== '/auth/callback') return false;
+  if (!['/auth/callback', '/codex/callback'].includes(parsed.pathname)) return false;
 
   const code = (parsed.searchParams.get('code') || '').trim();
   const state = (parsed.searchParams.get('state') || '').trim();
   return Boolean(code && state);
 }
 
-function buildLocalhostCleanupPrefix(rawUrl) {
-  if (!isLocalhostOAuthCallbackUrl(rawUrl)) return '';
-
+function isLocalCpaUrl(rawUrl) {
   const parsed = parseUrlSafely(rawUrl);
-  return parsed ? `${parsed.origin}/auth` : '';
+  if (!parsed) return false;
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+  return ['localhost', '127.0.0.1'].includes(parsed.hostname);
+}
+
+function shouldBypassStep9ForLocalCpa(state) {
+  return Boolean(state?.localhostUrl) && isLocalCpaUrl(state?.vpsUrl);
 }
 
 function matchesSourceUrlFamily(source, candidateUrl, referenceUrl) {
@@ -312,21 +316,43 @@ async function closeConflictingTabsForSource(source, currentUrl, options = {}) {
   await addLog(`已关闭 ${matchedIds.length} 个旧的${getSourceLabel(source)}标签页。`, 'info');
 }
 
-async function closeTabsByUrlPrefix(prefix, options = {}) {
-  if (!prefix) return 0;
+function isLocalhostOAuthCallbackTabMatch(callbackUrl, candidateUrl) {
+  if (!isLocalhostOAuthCallbackUrl(callbackUrl) || !isLocalhostOAuthCallbackUrl(candidateUrl)) {
+    return false;
+  }
+
+  const callback = parseUrlSafely(callbackUrl);
+  const candidate = parseUrlSafely(candidateUrl);
+  if (!callback || !candidate) return false;
+
+  return callback.origin === candidate.origin
+    && callback.pathname === candidate.pathname
+    && callback.searchParams.get('code') === candidate.searchParams.get('code')
+    && callback.searchParams.get('state') === candidate.searchParams.get('state');
+}
+
+async function closeLocalhostCallbackTabs(callbackUrl, options = {}) {
+  if (!isLocalhostOAuthCallbackUrl(callbackUrl)) return 0;
 
   const { excludeTabIds = [] } = options;
   const excluded = new Set(excludeTabIds.filter(id => Number.isInteger(id)));
   const tabs = await chrome.tabs.query({});
   const matchedIds = tabs
     .filter((tab) => Number.isInteger(tab.id) && !excluded.has(tab.id))
-    .filter((tab) => typeof tab.url === 'string' && tab.url.startsWith(prefix))
+    .filter((tab) => isLocalhostOAuthCallbackTabMatch(callbackUrl, tab.url))
     .map((tab) => tab.id);
 
   if (!matchedIds.length) return 0;
 
   await chrome.tabs.remove(matchedIds).catch(() => { });
-  await addLog(`已关闭 ${matchedIds.length} 个匹配 ${prefix} 的 localhost 残留标签页。`, 'info');
+
+  const registry = await getTabRegistry();
+  if (registry['signup-page']?.tabId && matchedIds.includes(registry['signup-page'].tabId)) {
+    registry['signup-page'] = null;
+    await setState({ tabRegistry: registry });
+  }
+
+  await addLog(`已关闭 ${matchedIds.length} 个匹配当前 OAuth callback 的 localhost 残留标签页。`, 'info');
   return matchedIds.length;
 }
 
@@ -871,6 +897,26 @@ async function addLog(message, level = 'info') {
   chrome.runtime.sendMessage({ type: 'LOG_ENTRY', payload: entry }).catch(() => { });
 }
 
+function getStep8CallbackUrlFromNavigation(details, signupTabId) {
+  if (!Number.isInteger(signupTabId) || !details) return '';
+  if (details.tabId !== signupTabId) return '';
+  if (details.frameId !== 0) return '';
+  return isLocalhostOAuthCallbackUrl(details.url) ? details.url : '';
+}
+
+function getStep8CallbackUrlFromTabUpdate(tabId, changeInfo, tab, signupTabId) {
+  if (!Number.isInteger(signupTabId) || tabId !== signupTabId) return '';
+
+  const candidates = [changeInfo?.url, tab?.url];
+  for (const candidate of candidates) {
+    if (isLocalhostOAuthCallbackUrl(candidate)) {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
 function getSourceLabel(source) {
   const labels = {
     'sidepanel': '侧边栏',
@@ -1394,9 +1440,8 @@ async function handleStepData(step, payload) {
       }
       break;
     case 9: {
-      const localhostPrefix = buildLocalhostCleanupPrefix(payload.localhostUrl);
-      if (localhostPrefix) {
-        await closeTabsByUrlPrefix(localhostPrefix);
+      if (payload.localhostUrl) {
+        await closeLocalhostCallbackTabs(payload.localhostUrl);
       }
       break;
     }
@@ -1475,10 +1520,8 @@ async function requestStop(options = {}) {
 
   stopRequested = true;
   cancelPendingCommands();
-  if (webNavListener) {
-    chrome.webNavigation.onBeforeNavigate.removeListener(webNavListener);
-    webNavListener = null;
-  }
+  cleanupStep8NavigationListeners();
+  rejectPendingStep8(new Error(STOP_ERROR_MESSAGE));
 
   await addLog(logMessage, 'warn');
   await broadcastStopToContentScripts();
@@ -2558,6 +2601,9 @@ async function executeStep7(state) {
 // ============================================================
 
 let webNavListener = null;
+let webNavCommittedListener = null;
+let step8TabUpdatedListener = null;
+let step8PendingReject = null;
 const STEP8_CLICK_EFFECT_TIMEOUT_MS = 3500;
 const STEP8_CLICK_RETRY_DELAY_MS = 500;
 const STEP8_READY_WAIT_TIMEOUT_MS = 30000;
@@ -2568,6 +2614,34 @@ const STEP8_STRATEGIES = [
   { mode: 'content', strategy: 'dispatchClick', label: 'dispatch click' },
   { mode: 'debugger', label: 'debugger click retry' },
 ];
+
+function cleanupStep8NavigationListeners() {
+  if (webNavListener) {
+    chrome.webNavigation.onBeforeNavigate.removeListener(webNavListener);
+    webNavListener = null;
+  }
+  if (webNavCommittedListener) {
+    chrome.webNavigation.onCommitted.removeListener(webNavCommittedListener);
+    webNavCommittedListener = null;
+  }
+  if (step8TabUpdatedListener) {
+    chrome.tabs.onUpdated.removeListener(step8TabUpdatedListener);
+    step8TabUpdatedListener = null;
+  }
+}
+
+function rejectPendingStep8(error) {
+  if (!step8PendingReject) return;
+  const reject = step8PendingReject;
+  step8PendingReject = null;
+  reject(error);
+}
+
+function throwIfStep8SettledOrStopped(isSettled = false) {
+  if (isSettled || stopRequested) {
+    throw new Error(STOP_ERROR_MESSAGE);
+  }
+}
 
 async function getStep8PageState(tabId, responseTimeoutMs = 1500) {
   try {
@@ -2703,13 +2777,11 @@ async function executeStep8(state) {
     let signupTabId = null;
 
     const cleanupListener = () => {
-      if (webNavListener) {
-        chrome.webNavigation.onBeforeNavigate.removeListener(webNavListener);
-        webNavListener = null;
-      }
+      cleanupStep8NavigationListeners();
+      step8PendingReject = null;
     };
 
-    const failStep8 = (error) => {
+    const rejectStep8 = (error) => {
       if (resolved) return;
       resolved = true;
       clearTimeout(timeout);
@@ -2717,44 +2789,67 @@ async function executeStep8(state) {
       reject(error);
     };
 
+    const finalizeStep8Callback = (callbackUrl) => {
+      if (resolved || !callbackUrl) return;
+
+      resolved = true;
+      cleanupListener();
+      clearTimeout(timeout);
+
+      addLog(`步骤 8：已捕获 localhost 地址：${callbackUrl}`, 'ok').then(() => {
+        return completeStepFromBackground(8, { localhostUrl: callbackUrl });
+      }).then(() => {
+        resolve();
+      }).catch((err) => {
+        reject(err);
+      });
+    };
+
     const timeout = setTimeout(() => {
-      failStep8(new Error('120 秒内未捕获到 localhost 回调跳转，步骤 8 已持续重试点击“继续”但页面仍未完成授权。'));
+      rejectStep8(new Error('120 秒内未捕获到 localhost 回调跳转，步骤 8 的点击可能被拦截了。'));
     }, 120000);
 
+    step8PendingReject = (error) => {
+      rejectStep8(error);
+    };
+
     webNavListener = (details) => {
-      if (resolved || !signupTabId) return;
-      if (details.tabId !== signupTabId) return;
-      if (details.frameId !== 0) return;
-      if (isLocalhostOAuthCallbackUrl(details.url)) {
-        console.log(LOG_PREFIX, `已捕获 localhost OAuth 回调：${details.url}`);
-        resolved = true;
-        cleanupListener();
-        clearTimeout(timeout);
-        addLog(`步骤 8：已捕获 localhost 地址：${details.url}`, 'ok').then(() => {
-          return completeStepFromBackground(8, { localhostUrl: details.url });
-        }).then(() => {
-          resolve();
-        }).catch((err) => {
-          reject(err);
-        });
-      }
+      const callbackUrl = getStep8CallbackUrlFromNavigation(details, signupTabId);
+      finalizeStep8Callback(callbackUrl);
+    };
+
+    webNavCommittedListener = (details) => {
+      const callbackUrl = getStep8CallbackUrlFromNavigation(details, signupTabId);
+      finalizeStep8Callback(callbackUrl);
+    };
+
+    step8TabUpdatedListener = (tabId, changeInfo, tab) => {
+      const callbackUrl = getStep8CallbackUrlFromTabUpdate(tabId, changeInfo, tab, signupTabId);
+      finalizeStep8Callback(callbackUrl);
     };
 
     (async () => {
       try {
+        throwIfStep8SettledOrStopped(resolved);
         signupTabId = await getTabId('signup-page');
-        if (signupTabId) {
+        throwIfStep8SettledOrStopped(resolved);
+
+        if (signupTabId && await isTabAlive('signup-page')) {
           await chrome.tabs.update(signupTabId, { active: true });
-          await addLog('步骤 8：已切回认证页，准备循环确认“继续”按钮直到页面真正跳转...');
+          await addLog('步骤 8：已切回认证页，正在准备调试器点击...');
         } else {
           signupTabId = await reuseOrCreateTab('signup-page', state.oauthUrl);
-          await addLog('步骤 8：已重新打开认证页，准备循环确认“继续”按钮直到页面真正跳转...');
+          await addLog('步骤 8：已重新打开认证页，正在准备调试器点击...');
         }
 
+        throwIfStep8SettledOrStopped(resolved);
         chrome.webNavigation.onBeforeNavigate.addListener(webNavListener);
+        chrome.webNavigation.onCommitted.addListener(webNavCommittedListener);
+        chrome.tabs.onUpdated.addListener(step8TabUpdatedListener);
 
         let attempt = 0;
         while (!resolved) {
+          throwIfStep8SettledOrStopped(resolved);
           const pageState = await waitForStep8Ready(signupTabId);
           if (!pageState?.consentReady) {
             await sleepWithStop(STEP8_CLICK_RETRY_DELAY_MS);
@@ -2769,9 +2864,8 @@ async function executeStep8(state) {
 
           if (strategy.mode === 'debugger') {
             const clickTarget = await prepareStep8DebuggerClick();
-            if (!resolved) {
-              await clickWithDebugger(signupTabId, clickTarget?.rect);
-            }
+            throwIfStep8SettledOrStopped(resolved);
+            await clickWithDebugger(signupTabId, clickTarget?.rect);
           } else {
             await triggerStep8ContentStrategy(strategy.strategy);
           }
@@ -2794,7 +2888,7 @@ async function executeStep8(state) {
           await sleepWithStop(STEP8_CLICK_RETRY_DELAY_MS);
         }
       } catch (err) {
-        failStep8(err);
+        rejectStep8(err);
       }
     })();
   });
@@ -2813,6 +2907,15 @@ async function executeStep9(state) {
   }
   if (!state.vpsUrl) {
     throw new Error('尚未填写 CPA 地址，请先在侧边栏输入。');
+  }
+
+  if (shouldBypassStep9ForLocalCpa(state)) {
+    await addLog('步骤 9：检测到本地 CPA，步骤 8 完成后已自动添加，无需重复提交回调地址。', 'info');
+    await completeStepFromBackground(9, {
+      localhostUrl: state.localhostUrl,
+      verifiedStatus: 'local-auto',
+    });
+    return;
   }
 
   await addLog('步骤 9：正在打开 CPA 面板...');
