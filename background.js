@@ -3027,17 +3027,24 @@ function getEmailGeneratorLabel(generator) {
 }
 
 function generateCloudflareAliasLocalPart() {
-  const now = new Date();
-  const stamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-    String(now.getHours()).padStart(2, '0'),
-    String(now.getMinutes()).padStart(2, '0'),
-    String(now.getSeconds()).padStart(2, '0'),
-  ].join('');
-  const randomPart = String(Math.floor(Math.random() * 900) + 100);
-  return `user${stamp}${randomPart}`.toLowerCase();
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const digits = '0123456789';
+  const chars = [];
+
+  for (let i = 0; i < 6; i++) {
+    chars.push(letters[Math.floor(Math.random() * letters.length)]);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    chars.push(digits[Math.floor(Math.random() * digits.length)]);
+  }
+
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+
+  return chars.join('');
 }
 
 async function fetchCloudflareEmail(state, options = {}) {
