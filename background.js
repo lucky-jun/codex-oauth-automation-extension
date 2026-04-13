@@ -50,42 +50,6 @@ initializeSessionStorageAccess();
 // 状态管理（chrome.storage.session + chrome.storage.local）
 // ============================================================
 
-const LEGACY_PERSISTED_SETTING_DEFAULTS = {
-  panelMode: 'cpa', // Step 1 / Step 9 的来源模式：cpa | sub2api。
-  vpsUrl: '', // VPS 面板地址，可手动填写。
-  vpsPassword: '', // VPS 面板登录密码，可手动填写。
-  localCpaStep9Mode: DEFAULT_LOCAL_CPA_STEP9_MODE, // 本地 CPA 的第 9 步策略：submit | bypass。
-  sub2apiUrl: DEFAULT_SUB2API_URL, // SUB2API 管理后台地址。
-  sub2apiEmail: '', // SUB2API 登录邮箱。
-  sub2apiPassword: '', // SUB2API 登录密码。
-  sub2apiGroupName: DEFAULT_SUB2API_GROUP_NAME, // SUB2API 创建账号时绑定的分组名。
-  customPassword: '', // 自定义账号密码；留空时由程序自动生成随机密码。
-  autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
-  autoRunFallbackThreadIntervalMinutes: 0, // 兜底模式下，两轮线程之间的等待分钟数。
-  autoRunDelayEnabled: false, // 自动运行是否启用启动前倒计时。
-  autoRunDelayMinutes: 30, // 自动运行倒计时分钟数。
-  autoStepDelaySeconds: null, // 自动运行每一步执行前的额外等待秒数；0 或空表示不延迟。
-  mailProvider: '163', // 验证码邮箱来源（163 / 163-vip / qq / inbucket）。
-  autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
-  autoRunDelayEnabled: false, // 自动运行是否启用启动前倒计时。
-  autoRunDelayMinutes: 30, // 自动运行倒计时分钟数。
-  autoStepDelaySeconds: null, // 自动运行每一步执行前的额外等待秒数；0 或空表示不延迟。
-  mailProvider: '163', // 验证码邮箱来源（163 / 163-vip / qq / inbucket）。
-  autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
-  autoRunFallbackThreadIntervalMinutes: 0, // 兜底模式下，两轮线程之间的等待分钟数。
-  autoRunDelayEnabled: false, // 自动运行是否启用启动前倒计时。
-  autoRunDelayMinutes: 30, // 自动运行倒计时分钟数。
-  autoStepDelaySeconds: null, // 自动运行每一步执行前的额外等待秒数；0 或空表示不延迟。
-  mailProvider: '163', // 验证码邮箱来源（163 / 163-vip / qq / inbucket）。
-  emailGenerator: 'duck', // 注册邮箱生成方式：duck / cloudflare。
-  inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
-  inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
-  cloudflareDomain: '', // 仅当 emailGenerator=cloudflare 时填写自定义域名。
-  cloudflareDomains: [], // Cloudflare 可选域名列表。
-  hotmailAccounts: [],
-  emailPrefix: '',
-};
-
 const PERSISTED_SETTING_DEFAULTS = {
   panelMode: 'cpa',
   vpsUrl: '',
@@ -103,6 +67,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   autoStepDelaySeconds: null,
   mailProvider: '163',
   emailGenerator: 'duck',
+  emailPrefix: '',
   inbucketHost: '',
   inbucketMailbox: '',
   cloudflareDomain: '',
