@@ -52,7 +52,7 @@
 - 支持自定义密码；留空时自动生成强密码
 - 自动显示当前使用中的密码，便于后续保存
 - 自动获取注册验证码与登录验证码
-- 支持 `Hotmail`：直接使用 `邮箱 + 客户端 ID + 刷新令牌（refresh token）` 刷新微软令牌，并通过 Microsoft Graph 读取最新邮件
+- 支持 `Hotmail`：直接使用 `邮箱 + 客户端 ID + 刷新令牌（refresh token）` 请求第三方邮件 API 读取最新邮件
 - 支持 `QQ Mail`、`163 Mail`、`Inbucket mailbox`
 - 支持从 DuckDuckGo Email Protection 自动生成新的 `@duck.com` 地址
 - 支持基于 Cloudflare 自定义域名自动生成随机邮箱前缀
@@ -137,13 +137,20 @@ Step 1 和 Step 9 都依赖这个地址。
 
 说明：
 
-- `Hotmail` 通过侧边栏里的 Hotmail 账号池选择账号，并直接访问 Microsoft Graph 邮件接口
+- `Hotmail` 通过侧边栏里的 Hotmail 账号池选择账号，并请求第三方邮件 API
 - `QQ`、`163`、`163 VIP` 用于直接轮询网页邮箱
 - `Inbucket` 通过你在侧边栏里配置的 host 访问 `mailbox` 页面：`https://<your-inbucket-host>/m/<mailbox>/`
 
 ### `Hotmail 账号池`
 
 仅当 `Mail = Hotmail` 时使用。
+
+可配置项：
+
+- `Hotmail API 地址`
+- `响应类型`
+- `收件箱参数`
+- `垃圾箱参数`
 
 每条账号支持保存：
 
@@ -154,7 +161,8 @@ Step 1 和 Step 9 都依赖这个地址。
 
 使用方式：
 
-- 先新增账号
+- 先配置 Hotmail API 相关设置
+- 再新增账号
 - 点击 `校验`
 - 校验通过后，可点击 `测试收信`
 - Auto 模式每轮会自动选用一个可用账号
@@ -406,7 +414,7 @@ Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
 
 支持：
 
-- `Hotmail`（Microsoft Graph 邮件接口）
+- `Hotmail`（第三方邮件 API）
 - `content/qq-mail.js`
 - `content/mail-163.js`
 - `content/inbucket-mail.js`

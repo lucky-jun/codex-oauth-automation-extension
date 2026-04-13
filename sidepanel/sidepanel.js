@@ -60,6 +60,10 @@ const selectMailProvider = document.getElementById('select-mail-provider');
 const rowEmailGenerator = document.getElementById('row-email-generator');
 const selectEmailGenerator = document.getElementById('select-email-generator');
 const hotmailSection = document.getElementById('hotmail-section');
+const inputHotmailApiUrl = document.getElementById('input-hotmail-api-url');
+const inputHotmailApiResponseType = document.getElementById('input-hotmail-api-response-type');
+const inputHotmailApiInboxMailbox = document.getElementById('input-hotmail-api-inbox-mailbox');
+const inputHotmailApiJunkMailbox = document.getElementById('input-hotmail-api-junk-mailbox');
 const inputHotmailEmail = document.getElementById('input-hotmail-email');
 const inputHotmailClientId = document.getElementById('input-hotmail-client-id');
 const inputHotmailPassword = document.getElementById('input-hotmail-password');
@@ -597,6 +601,10 @@ function collectSettingsPayload() {
     emailGenerator: selectEmailGenerator.value,
     inbucketHost: inputInbucketHost.value.trim(),
     inbucketMailbox: inputInbucketMailbox.value.trim(),
+    hotmailApiUrl: inputHotmailApiUrl.value.trim(),
+    hotmailApiResponseType: inputHotmailApiResponseType.value.trim(),
+    hotmailApiInboxMailbox: inputHotmailApiInboxMailbox.value.trim(),
+    hotmailApiJunkMailbox: inputHotmailApiJunkMailbox.value.trim(),
     cloudflareDomain: selectedCloudflareDomain,
     cloudflareDomains: domains,
     autoRunSkipFailures: inputAutoSkipFailures.checked,
@@ -708,11 +716,15 @@ async function saveSettings(options = {}) {
       throw new Error(response.error);
     }
 
-    syncLatestState(payload);
-    markSettingsDirty(false);
-    updatePanelModeUI();
-    updateMailProviderUI();
-    updateButtonStates();
+    if (response?.state) {
+      applySettingsState(response.state);
+    } else {
+      syncLatestState(payload);
+      markSettingsDirty(false);
+      updatePanelModeUI();
+      updateMailProviderUI();
+      updateButtonStates();
+    }
     if (!silent) {
       showToast('配置已保存', 'success', 1800);
     }
@@ -838,6 +850,10 @@ function applySettingsState(state) {
   selectEmailGenerator.value = state?.emailGenerator || 'duck';
   inputInbucketHost.value = state?.inbucketHost || '';
   inputInbucketMailbox.value = state?.inbucketMailbox || '';
+  inputHotmailApiUrl.value = state?.hotmailApiUrl || '';
+  inputHotmailApiResponseType.value = state?.hotmailApiResponseType ?? '';
+  inputHotmailApiInboxMailbox.value = state?.hotmailApiInboxMailbox || '';
+  inputHotmailApiJunkMailbox.value = state?.hotmailApiJunkMailbox || '';
   renderCloudflareDomainOptions(state?.cloudflareDomain || '');
   setCloudflareDomainEditMode(false, { clearInput: true });
   inputAutoSkipFailures.checked = Boolean(state?.autoRunSkipFailures);
@@ -2198,6 +2214,16 @@ inputVpsPassword.addEventListener('input', () => {
 });
 inputVpsPassword.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
+});
+
+[inputHotmailApiUrl, inputHotmailApiResponseType, inputHotmailApiInboxMailbox, inputHotmailApiJunkMailbox].forEach((input) => {
+  input?.addEventListener('input', () => {
+    markSettingsDirty(true);
+    scheduleSettingsAutoSave();
+  });
+  input?.addEventListener('blur', () => {
+    saveSettings({ silent: true }).catch(() => { });
+  });
 });
 
 inputPassword.addEventListener('input', () => {

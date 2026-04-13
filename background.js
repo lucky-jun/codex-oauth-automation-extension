@@ -3,11 +3,11 @@
 importScripts('data/names.js', 'hotmail-utils.js', 'content/activation-utils.js');
 
 const {
-  buildHotmailGraphMessagesUrl,
+  buildHotmailMailApiLatestUrl,
   extractVerificationCodeFromMessage,
   filterHotmailAccountsByUsage,
   getLatestHotmailMessage,
-  getHotmailGraphRequestConfig,
+  getHotmailMailApiRequestConfig,
   getHotmailVerificationPollConfig,
   getHotmailVerificationRequestTimestamp,
   normalizeHotmailMailApiMessages,
@@ -20,8 +20,6 @@ const {
 const {
   isRecoverableStep9AuthFailure,
 } = self.MultiPageActivationUtils;
-const buildHotmailMailApiLatestUrl = buildHotmailGraphMessagesUrl;
-const getHotmailMailApiRequestConfig = getHotmailGraphRequestConfig;
 
 const LOG_PREFIX = '[MultiPage:bg]';
 const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
@@ -40,6 +38,10 @@ const AUTO_RUN_ALARM_NAME = 'scheduled-auto-run';
 const AUTO_RUN_DELAY_MIN_MINUTES = 1;
 const AUTO_RUN_DELAY_MAX_MINUTES = 1440;
 const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
+const DEFAULT_HOTMAIL_MAIL_API_URL = 'https://apple.882263.xyz/api/mail-new';
+const DEFAULT_HOTMAIL_MAIL_API_RESPONSE_TYPE = 'json';
+const DEFAULT_HOTMAIL_MAIL_API_INBOX_MAILBOX = 'INBOX';
+const DEFAULT_HOTMAIL_MAIL_API_JUNK_MAILBOX = 'Junk';
 
 initializeSessionStorageAccess();
 
@@ -64,6 +66,10 @@ const PERSISTED_SETTING_DEFAULTS = {
   emailGenerator: 'duck', // 注册邮箱生成方式：duck / cloudflare。
   inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
   inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
+  hotmailApiUrl: DEFAULT_HOTMAIL_MAIL_API_URL, // Hotmail 第三方邮件 API 地址。
+  hotmailApiResponseType: DEFAULT_HOTMAIL_MAIL_API_RESPONSE_TYPE, // Hotmail 第三方邮件 API 的 response_type 参数。
+  hotmailApiInboxMailbox: DEFAULT_HOTMAIL_MAIL_API_INBOX_MAILBOX, // Hotmail API 收件箱参数值。
+  hotmailApiJunkMailbox: DEFAULT_HOTMAIL_MAIL_API_JUNK_MAILBOX, // Hotmail API 垃圾箱参数值。
   cloudflareDomain: '', // 仅当 emailGenerator=cloudflare 时填写自定义域名。
   cloudflareDomains: [], // Cloudflare 可选域名列表。
   hotmailAccounts: [],
@@ -191,6 +197,56 @@ function normalizeCloudflareDomains(values) {
   return normalizedDomains;
 }
 
+function normalizeHotmailMailApiUrl(rawValue = '') {
+  const value = String(rawValue || '').trim();
+  if (!value) return DEFAULT_HOTMAIL_MAIL_API_URL;
+
+  try {
+    const parsed = new URL(value);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return DEFAULT_HOTMAIL_MAIL_API_URL;
+    }
+    return parsed.toString();
+  } catch {
+    return DEFAULT_HOTMAIL_MAIL_API_URL;
+  }
+}
+
+function normalizeHotmailMailApiResponseType(rawValue) {
+  if (rawValue === undefined || rawValue === null) {
+    return DEFAULT_HOTMAIL_MAIL_API_RESPONSE_TYPE;
+  }
+  return String(rawValue).trim();
+}
+
+function normalizeHotmailMailApiMailbox(rawValue, fallback) {
+  if (rawValue === undefined || rawValue === null) {
+    return fallback;
+  }
+  const value = String(rawValue).trim();
+  return value || fallback;
+}
+
+function getHotmailMailApiSettings(state = {}) {
+  return {
+    apiUrl: normalizeHotmailMailApiUrl(state.hotmailApiUrl),
+    responseType: normalizeHotmailMailApiResponseType(state.hotmailApiResponseType),
+    inboxMailbox: normalizeHotmailMailApiMailbox(state.hotmailApiInboxMailbox, DEFAULT_HOTMAIL_MAIL_API_INBOX_MAILBOX),
+    junkMailbox: normalizeHotmailMailApiMailbox(state.hotmailApiJunkMailbox, DEFAULT_HOTMAIL_MAIL_API_JUNK_MAILBOX),
+  };
+}
+
+function resolveHotmailMailApiMailbox(mailbox, settings = {}) {
+  const normalized = String(mailbox || '').trim().toLowerCase();
+  if (normalized === 'junk' || normalized === 'junk email' || normalized === 'junkemail') {
+    return normalizeHotmailMailApiMailbox(settings.junkMailbox, DEFAULT_HOTMAIL_MAIL_API_JUNK_MAILBOX);
+  }
+  if (normalized === 'inbox' || !normalized) {
+    return normalizeHotmailMailApiMailbox(settings.inboxMailbox, DEFAULT_HOTMAIL_MAIL_API_INBOX_MAILBOX);
+  }
+  return String(mailbox || '').trim();
+}
+
 function normalizePersistentSettingValue(key, value) {
   switch (key) {
     case 'panelMode':
@@ -224,6 +280,14 @@ function normalizePersistentSettingValue(key, value) {
       return String(value || '').trim();
     case 'inbucketMailbox':
       return String(value || '').trim();
+    case 'hotmailApiUrl':
+      return normalizeHotmailMailApiUrl(value);
+    case 'hotmailApiResponseType':
+      return normalizeHotmailMailApiResponseType(value);
+    case 'hotmailApiInboxMailbox':
+      return normalizeHotmailMailApiMailbox(value, DEFAULT_HOTMAIL_MAIL_API_INBOX_MAILBOX);
+    case 'hotmailApiJunkMailbox':
+      return normalizeHotmailMailApiMailbox(value, DEFAULT_HOTMAIL_MAIL_API_JUNK_MAILBOX);
     case 'cloudflareDomain':
       return normalizeCloudflareDomain(value);
     case 'cloudflareDomains':
@@ -449,16 +513,14 @@ function normalizeHotmailAccount(account = {}) {
   const normalizedLastAuthAt = Number.isFinite(Number(account.lastAuthAt)) ? Number(account.lastAuthAt) : 0;
   const normalizedStatus = String(
     account.status
-    || (normalizedLastAuthAt > 0 || account.accessToken ? 'authorized' : 'pending')
+    || (normalizedLastAuthAt > 0 ? 'authorized' : 'pending')
   );
   return {
     id: String(account.id || crypto.randomUUID()),
     email: String(account.email || '').trim(),
     password: String(account.password || ''),
     clientId: String(account.clientId || '').trim(),
-    accessToken: String(account.accessToken || ''),
     refreshToken: String(account.refreshToken || ''),
-    expiresAt: Number.isFinite(Number(account.expiresAt)) ? Number(account.expiresAt) : 0,
     status: normalizedStatus,
     enabled: account.enabled !== undefined ? Boolean(account.enabled) : true,
     used: Boolean(account.used),
@@ -513,8 +575,6 @@ async function upsertHotmailAccount(input) {
   const normalized = normalizeHotmailAccount({
     ...(existing || {}),
     ...(credentialsChanged ? {
-      accessToken: '',
-      expiresAt: 0,
       status: 'pending',
       lastAuthAt: 0,
       lastError: '',
@@ -650,7 +710,7 @@ async function ensureHotmailAccountForFlow(options = {}) {
   return setCurrentHotmailAccount(account.id, { markUsed, syncEmail: true });
 }
 
-async function requestHotmailMailApiLegacy(account, mailbox = 'INBOX') {
+async function requestHotmailMailApi(account, mailbox = 'INBOX') {
   if (!account?.email) {
     throw new Error('Hotmail 账号缺少邮箱地址。');
   }
@@ -661,12 +721,14 @@ async function requestHotmailMailApiLegacy(account, mailbox = 'INBOX') {
     throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少刷新令牌（refresh token）。`);
   }
 
+  const hotmailApiSettings = getHotmailMailApiSettings(await getState());
   const url = buildHotmailMailApiLatestUrl({
+    apiUrl: hotmailApiSettings.apiUrl,
     clientId: account.clientId,
     email: account.email,
     refreshToken: account.refreshToken,
-    mailbox,
-    responseType: 'json',
+    mailbox: resolveHotmailMailApiMailbox(mailbox, hotmailApiSettings),
+    responseType: hotmailApiSettings.responseType,
   });
   const { timeoutMs } = getHotmailMailApiRequestConfig();
   const controller = new AbortController();
@@ -710,12 +772,10 @@ async function requestHotmailMailApiLegacy(account, mailbox = 'INBOX') {
   };
 }
 
-function applyHotmailApiResultToAccountLegacy(account, apiResult) {
+function applyHotmailApiResultToAccount(account, apiResult) {
   const nextRefreshToken = String(apiResult?.nextRefreshToken || '').trim();
   return {
     ...account,
-    accessToken: '',
-    expiresAt: 0,
     refreshToken: nextRefreshToken || account.refreshToken,
     status: 'authorized',
     lastAuthAt: Date.now(),
@@ -723,168 +783,9 @@ function applyHotmailApiResultToAccountLegacy(account, apiResult) {
   };
 }
 
-async function fetchHotmailMailboxMessagesLegacy(account, mailboxes = HOTMAIL_MAILBOXES) {
-  let workingAccount = normalizeHotmailAccount(account);
-  const mailboxResults = [];
-
-  for (const mailbox of mailboxes) {
-    const result = await requestHotmailMailApiLegacy(workingAccount, mailbox);
-    workingAccount = applyHotmailApiResultToAccountLegacy(workingAccount, result);
-    mailboxResults.push({
-      mailbox,
-      count: result.messages.length,
-      messages: result.messages.map((message) => ({ ...message, mailbox })),
-    });
-  }
-
-  const savedAccount = await upsertHotmailAccount(workingAccount);
-  return {
-    account: savedAccount,
-    mailboxResults,
-    messages: mailboxResults.flatMap((item) => item.messages),
-  };
-}
-
-function isHotmailAccessTokenUsable(account, now = Date.now()) {
-  return Boolean(account?.accessToken)
-    && Number(account?.expiresAt || 0) > now + 60_000;
-}
-
-async function refreshHotmailAccessToken(account) {
-  if (!account?.email) {
-    throw new Error('Hotmail 账号缺少邮箱地址。');
-  }
-  if (!account?.clientId) {
-    throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少客户端 ID。`);
-  }
-  if (!account?.refreshToken) {
-    throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少刷新令牌（refresh token）。`);
-  }
-
-  const { timeoutMs, scopes, tokenUrl } = getHotmailGraphRequestConfig();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
-  const formData = new URLSearchParams();
-  formData.set('client_id', account.clientId);
-  formData.set('grant_type', 'refresh_token');
-  formData.set('refresh_token', account.refreshToken);
-  formData.set('scope', scopes.join(' '));
-  formData.set('redirect_uri', 'https://login.microsoftonline.com/common/oauth2/nativeclient');
-
-  let response;
-  try {
-    response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: formData.toString(),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    const error = new Error(
-      err?.name === 'AbortError'
-        ? `Hotmail 令牌刷新超时（>${Math.round(timeoutMs / 1000)} 秒）`
-        : `Hotmail 令牌刷新失败：${err.message}`
-    );
-    error.code = 'HOTMAIL_TOKEN_REFRESH_FAILED';
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  const text = await response.text();
-  let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = { raw: text };
-  }
-
-  if (!response.ok || !payload?.access_token) {
-    const rawErrorText = payload?.error_description || payload?.error?.message || payload?.error || payload?.message || text || `HTTP ${response.status}`;
-    const isCrossOriginError = typeof rawErrorText === 'string' && rawErrorText.includes('AADSTS90023');
-    const errorText = isCrossOriginError
-      ? `Azure AD 拒绝了跨域令牌请求（AADSTS90023）。请在 Azure AD 应用注册中将应用平台改为"单页应用程序（SPA）"，并将重定向 URI 设置为 https://login.microsoftonline.com/common/oauth2/nativeclient，或将应用类型改为"移动和桌面应用程序（Native）"。`
-      : rawErrorText;
-    const error = new Error(`Hotmail 令牌刷新失败：${errorText}`);
-    error.code = 'HOTMAIL_TOKEN_REFRESH_FAILED';
-    throw error;
-  }
-
-  const expiresInSeconds = Math.max(60, Number(payload.expires_in || payload.expiresIn || 0) || 3600);
+function buildHotmailMailApiFailureAccount(account, errorMessage) {
   return normalizeHotmailAccount({
     ...account,
-    accessToken: String(payload.access_token || ''),
-    refreshToken: String(payload.refresh_token || '').trim() || account.refreshToken,
-    expiresAt: Date.now() + expiresInSeconds * 1000,
-    status: 'authorized',
-    lastAuthAt: Date.now(),
-    lastError: '',
-  });
-}
-
-async function requestHotmailGraphMessages(account, mailbox = 'INBOX') {
-  const { timeoutMs, pageSize, messageFields } = getHotmailGraphRequestConfig();
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
-  const url = buildHotmailGraphMessagesUrl({
-    mailbox,
-    top: pageSize,
-    selectFields: messageFields,
-  });
-
-  let response;
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${account.accessToken}`,
-      },
-      signal: controller.signal,
-    });
-  } catch (err) {
-    const error = new Error(
-      err?.name === 'AbortError'
-        ? `Hotmail 邮件请求超时（>${Math.round(timeoutMs / 1000)} 秒）：${mailbox}`
-        : `Hotmail 邮件请求失败：${err.message}`
-    );
-    error.code = 'HOTMAIL_GRAPH_REQUEST_FAILED';
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  const text = await response.text();
-  let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = { raw: text };
-  }
-
-  if (!response.ok) {
-    const errorText = payload?.error?.message || payload?.error_description || payload?.message || text || `HTTP ${response.status}`;
-    const error = new Error(`Hotmail 邮件请求失败：${errorText}`);
-    error.code = response.status === 401 || response.status === 403
-      ? 'HOTMAIL_GRAPH_AUTH_FAILED'
-      : 'HOTMAIL_GRAPH_REQUEST_FAILED';
-    throw error;
-  }
-
-  return {
-    mailbox,
-    payload,
-    messages: normalizeHotmailMailApiMessages(payload?.value),
-  };
-}
-
-function buildHotmailAuthFailureAccount(account, errorMessage) {
-  return normalizeHotmailAccount({
-    ...account,
-    accessToken: '',
-    expiresAt: 0,
     status: 'error',
     lastError: String(errorMessage || ''),
   });
@@ -895,27 +796,9 @@ async function fetchHotmailMailboxMessages(account, mailboxes = HOTMAIL_MAILBOXE
   const mailboxResults = [];
 
   try {
-    if (!isHotmailAccessTokenUsable(workingAccount)) {
-      workingAccount = await refreshHotmailAccessToken(workingAccount);
-    }
-
     for (const mailbox of mailboxes) {
-      let result;
-      try {
-        result = await requestHotmailGraphMessages(workingAccount, mailbox);
-      } catch (err) {
-        if (err?.code !== 'HOTMAIL_GRAPH_AUTH_FAILED') {
-          throw err;
-        }
-
-        workingAccount = await refreshHotmailAccessToken({
-          ...workingAccount,
-          accessToken: '',
-          expiresAt: 0,
-        });
-        result = await requestHotmailGraphMessages(workingAccount, mailbox);
-      }
-
+      const result = await requestHotmailMailApi(workingAccount, mailbox);
+      workingAccount = applyHotmailApiResultToAccount(workingAccount, result);
       mailboxResults.push({
         mailbox,
         count: result.messages.length,
@@ -923,10 +806,8 @@ async function fetchHotmailMailboxMessages(account, mailboxes = HOTMAIL_MAILBOXE
       });
     }
   } catch (err) {
-    if (err?.code === 'HOTMAIL_TOKEN_REFRESH_FAILED' || err?.code === 'HOTMAIL_GRAPH_AUTH_FAILED') {
-      const failedAccount = buildHotmailAuthFailureAccount(workingAccount, err.message);
-      await upsertHotmailAccount(failedAccount);
-    }
+    const failedAccount = buildHotmailMailApiFailureAccount(workingAccount, err.message);
+    await upsertHotmailAccount(failedAccount);
     throw err;
   }
 
@@ -1874,7 +1755,7 @@ function getSourceLabel(source) {
     'mail-163': '163 邮箱',
     'inbucket-mail': 'Inbucket 邮箱',
     'duck-mail': 'Duck 邮箱',
-    'hotmail-api': 'Hotmail（微软 Graph）',
+    'hotmail-api': 'Hotmail（第三方邮件 API）',
   };
   return labels[source] || source || '未知来源';
 }
@@ -2650,7 +2531,7 @@ async function handleMessage(message, sender) {
       const updates = buildPersistentSettingsPayload(message.payload || {});
       await setPersistentSettings(updates);
       await setState(updates);
-      return { ok: true };
+      return { ok: true, state: await getState() };
     }
 
     case 'EXPORT_SETTINGS': {
@@ -3738,7 +3619,7 @@ async function executeStep3(state) {
 function getMailConfig(state) {
   const provider = state.mailProvider || 'qq';
   if (provider === HOTMAIL_PROVIDER) {
-    return { provider: HOTMAIL_PROVIDER, label: 'Hotmail（微软 Graph）' };
+    return { provider: HOTMAIL_PROVIDER, label: 'Hotmail（第三方邮件 API）' };
   }
   if (provider === '163') {
     return { source: 'mail-163', url: 'https://mail.163.com/js6/main.jsp?df=mail163_letter#module=mbox.ListModule%7C%7B%22fid%22%3A1%2C%22order%22%3A%22date%22%2C%22desc%22%3Atrue%7D', label: '163 邮箱' };
