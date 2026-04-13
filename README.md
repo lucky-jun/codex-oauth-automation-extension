@@ -2,7 +2,7 @@
 
 一个用于批量跑通 ChatGPT OAuth 注册/登录流程的 Chrome 扩展。
 
-当前版本基于侧边栏控制，支持单步执行、整套自动执行、停止当前流程、保存常用配置，以及通过 DuckDuckGo / QQ / 163 / Inbucket mailbox 协助获取验证码。
+当前版本基于侧边栏控制，支持单步执行、整套自动执行、停止当前流程、保存常用配置，以及通过 DuckDuckGo / QQ / 163 / Inbucket / Hotmail 协助获取验证码。
 
 ## 最新版本测试结果
 
@@ -34,6 +34,16 @@
   </tr>
 </table>
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=QLHazyCoder%2Fcodex-oauth-automation-extension&type=timeline&logscale&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=QLHazyCoder/codex-oauth-automation-extension&type=timeline&logscale&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=QLHazyCoder/codex-oauth-automation-extension&type=timeline&logscale&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=QLHazyCoder/codex-oauth-automation-extension&type=timeline&logscale&legend=top-left" />
+  </picture>
+</a>
+
 ## 当前能力
 
 - 从 CPA 面板自动获取 OpenAI OAuth 授权链接
@@ -42,8 +52,10 @@
 - 支持自定义密码；留空时自动生成强密码
 - 自动显示当前使用中的密码，便于后续保存
 - 自动获取注册验证码与登录验证码
+- 支持 `Hotmail`：直接使用 `邮箱 + 客户端 ID + 刷新令牌（refresh token）` 刷新微软令牌，并通过 Microsoft Graph 读取最新邮件
 - 支持 `QQ Mail`、`163 Mail`、`Inbucket mailbox`
 - 支持从 DuckDuckGo Email Protection 自动生成新的 `@duck.com` 地址
+- 支持基于 Cloudflare 自定义域名自动生成随机邮箱前缀
 - Step 5 同时兼容两种页面：
   - 页面要求填写 `birthday`
   - 页面要求填写 `age`
@@ -59,6 +71,7 @@
 - 你自己的 CPA 管理面板，且页面结构与当前脚本适配
 - 至少准备一种验证码接收方式：
   - DuckDuckGo `@duck.com` + QQ / 163 / Inbucket 转发
+  - Cloudflare 自定义域邮箱前缀 + QQ / 163 / Inbucket 转发
   - 手动填写一个可收信邮箱
 - 如果使用 `QQ` / `163` / `Inbucket`，对应页面需要提前能正常打开
 
@@ -69,6 +82,36 @@
 3. 点击“加载已解压的扩展程序”
 4. 选择本项目目录
 5. 打开扩展侧边栏
+
+## 快速开始
+
+如果你只是想先跑通一套最稳的组合，建议直接按下面三种方案之一配置。
+
+### 方案 A：`CPA + QQ / 163 / 163 VIP`
+
+1. `CPA` 填你的管理面板 OAuth 页面地址
+2. `Mail` 选择 `QQ Mail`、`163 Mail` 或 `163 VIP Mail`
+3. `邮箱生成` 选择 `DuckDuckGo` 或 `Cloudflare`
+4. 若你选择 `Cloudflare`，先按下文把 Cloudflare Email Routing 配好
+5. 点击 `获取` 生成邮箱，或手动粘贴一个你能收信的邮箱
+6. 先单步验证 `Step 1 ~ Step 4`
+7. 验证没问题后再点右上角 `Auto`
+
+### 方案 B：`SUB2API + QQ / 163 / 163 VIP`
+
+1. `来源` 选择 `SUB2API`
+2. 填好 `SUB2API` 地址、登录邮箱、登录密码、分组名
+3. `Mail` 与 `邮箱生成` 的配置方式同方案 A
+4. Step 1 会直接在 SUB2API 后台生成 OAuth 链接
+5. Step 9 会把 localhost 回调提交回 SUB2API，并直接创建 OpenAI 账号
+
+### 方案 C：`Hotmail 账号池`
+
+1. `Mail` 选择 `Hotmail`
+2. 在 `Hotmail 账号池` 中添加 `邮箱 / Client ID / Refresh Token`
+3. 先点 `校验`，再点 `测试收信`
+4. 通过后再执行步骤或 `Auto`
+5. 当前项目中，`Mail = Hotmail` 时会直接使用账号池里的邮箱作为注册邮箱，不再走 `Duck / Cloudflare` 自动生成
 
 ## 侧边栏配置说明
 
@@ -84,16 +127,37 @@ Step 1 和 Step 9 都依赖这个地址。
 
 ### `Mail`
 
-支持三种验证码来源：
+支持五种验证码来源：
 
+- `Hotmail`
 - `163 Mail`
+- `163 VIP Mail`
 - `QQ Mail`
 - `Inbucket`
 
 说明：
 
-- `QQ` 和 `163` 用于直接轮询网页邮箱
+- `Hotmail` 通过侧边栏里的 Hotmail 账号池选择账号，并直接访问 Microsoft Graph 邮件接口
+- `QQ`、`163`、`163 VIP` 用于直接轮询网页邮箱
 - `Inbucket` 通过你在侧边栏里配置的 host 访问 `mailbox` 页面：`https://<your-inbucket-host>/m/<mailbox>/`
+
+### `Hotmail 账号池`
+
+仅当 `Mail = Hotmail` 时使用。
+
+每条账号支持保存：
+
+- `email`
+- `clientId`
+- `refreshToken`
+- 可选邮箱密码备注
+
+使用方式：
+
+- 先新增账号
+- 点击 `校验`
+- 校验通过后，可点击 `测试收信`
+- Auto 模式每轮会自动选用一个可用账号
 
 ### `Mailbox`
 
@@ -135,12 +199,114 @@ Step 3 使用的注册邮箱。
 来源有两种：
 
 - 手动粘贴
-- 点击 `Auto` 从 DuckDuckGo Email Protection 自动获取一个新的 `@duck.com`
+- 点击 `获取` 自动生成邮箱（DuckDuckGo 或 Cloudflare）
 
 注意：
 
+- 若 `邮箱生成 = Cloudflare`，插件里只需要维护 `CF 域名`
+- `CF 域名` 支持保存多个，并通过下拉框切换当前要生成的域名
+- Cloudflare 侧的转发规则、Catch-all、路由目标邮箱等，都需要你自己提前在 Cloudflare 后台配置好
+- 当 `Mail = Hotmail` 时，这个输入框由账号池自动同步当前账号邮箱
+- 当 `Mail = Hotmail` 时，Step 3 会直接使用 Hotmail 账号池里的邮箱；`Duck / Cloudflare` 不参与自动邮箱生成
+- 若你准备走 `Cloudflare`，更推荐把 `Mail` 设为 `QQ / 163 / 163 VIP`；`Inbucket` 仅在它能真实接收外部邮件并完成 Cloudflare 验证时再使用
 - 当前 `Auto` 按钮只负责 DuckDuckGo 地址获取
 - 如果你使用 Inbucket，它只是验证码收件箱，不会自动生成 Inbucket 地址
+
+### `邮箱生成 = Cloudflare` 时的配置
+
+- `CF 域名`：例如 `example.xyz`
+- 右侧 `添加 / 保存`：用于保存多个可切换的域名
+- 下拉框：用于切换当前这次要生成邮箱所使用的域名
+
+#### 当前实现是什么逻辑
+
+Cloudflare 模式下，插件不会再调用 Cloudflare API 创建路由。
+
+它现在只做一件事：
+
+1. 根据你当前选中的 `CF 域名`
+2. 本地生成一个 10 位随机前缀
+3. 前缀由 `6 个小写字母 + 4 个数字` 组成，顺序随机打乱
+4. 直接得到一个类似 `a3b9cd1e2f@example.xyz` 的注册邮箱
+5. 把这个邮箱写入当前流程继续往下跑
+
+也就是说，插件默认认为：
+
+- 你已经在 Cloudflare 后台把这个域名的收件转发规则配置好了
+- 这个随机前缀邮箱发来的邮件，最终能被你现有的 `163 / QQ / Inbucket` 收件链路接住
+
+#### 你需要自己提前做什么
+
+在 Cloudflare 后台，至少保证下面一条成立：
+
+- 你已经配好了 Catch-all / 通配规则，能接住任意前缀邮箱
+- 或者你本来就有一套能覆盖这些随机前缀邮箱的转发规则
+
+否则插件虽然能生成 `@你的域名` 邮箱，但验证码邮件最后没人接收，后面的 Step 4 / Step 7 还是会失败。
+
+#### 推荐搭配
+
+- `Mail = QQ Mail`：Cloudflare 的 `Destination address / Destination addresses` 填你的 QQ 邮箱全地址
+- `Mail = 163 Mail`：Cloudflare 的 `Destination address / Destination addresses` 填你的 163 邮箱全地址
+- `Mail = 163 VIP Mail`：Cloudflare 的 `Destination address / Destination addresses` 填你的 163 VIP 邮箱全地址
+- `Mail = Inbucket`：仅当你的 Inbucket 实例本身就是一个真实可收外部邮件、且能收到 Cloudflare 验证邮件的地址时再使用
+- `Mail = Hotmail`：当前项目的自动流程不推荐和 Cloudflare 同时使用；因为 `Mail = Hotmail` 时，注册邮箱会直接使用 Hotmail 账号池邮箱
+
+#### Cloudflare 后台怎么配（按钮中英对照）
+
+下面按钮名称以 Cloudflare 官方英文界面为准，括号内中文仅用于对照理解，不保证是 Cloudflare 的官方中文翻译。
+
+1. 登录 Cloudflare 后台，选中你要用的域名
+2. 进入 `Email > Email Routing`
+3. 如果这是你第一次给这个域名启用 Email Routing：
+   - 先检查 Cloudflare 准备添加的记录
+   - 点击 `Add records and enable（添加记录并启用）`
+4. 进入 `Routing rules（路由规则）` 或 `Routes（路由）`
+5. 先创建一个固定地址，用来把目标收件箱加进 Cloudflare：
+   - 点击 `Create address（创建地址）`
+   - 在 `Custom address（自定义地址）` 里填一个固定前缀，例如 `cf-init`
+   - 在 `Action（动作）` 中选择 `Send to an email（转发到邮箱）`
+   - 在 `Destination / Destination addresses（目标邮箱）` 中填你真正收验证码的邮箱
+   - 点击 `Save（保存）`
+6. 打开 Cloudflare 发到目标邮箱的验证邮件，依次点击：
+   - `Verify email address（验证邮箱地址）`
+   - `Go to Email Routing（前往 Email Routing）`
+7. 回到 Cloudflare 后台后，确认这个目标邮箱的状态已经变成 `Verified（已验证）`
+8. 如果 Cloudflare 还在首次启用向导里要求继续：
+   - 点击 `Continue（继续）`
+   - 点击 `Add records and finish（添加记录并完成）`
+9. 对于本项目这种“每次都生成随机前缀”的用法，建议再打开：
+   - `Catch-all address（Catch-all 地址）`
+   - 让它显示为 `Active（启用）`
+   - 在 `Action（动作）` 中选择 `Send to an email（转发到邮箱）`
+   - 如果界面要求选择 `Destination（目标邮箱）`，就选你刚刚已经验证通过的那个邮箱
+   - 点击 `Save（保存）`
+10. 最后再回到插件：
+   - `邮箱生成` 选择 `Cloudflare`
+   - 在 `CF 域名` 里点 `添加`
+   - 输入域名后点 `保存`
+   - 点击 `获取`
+
+#### Cloudflare 配好后怎么自测
+
+1. 先在插件里点击 `获取`，拿到一个随机前缀邮箱
+2. 用另一个邮箱给这个地址发一封测试邮件
+3. 不要用目标邮箱给自己发测试邮件，否则某些邮箱服务会把它当成重复邮件直接吞掉
+4. 如果你的 `Mail` 选的是 `QQ / 163 / 163 VIP / Inbucket`，就去对应收件链路里确认这封测试邮件能否到达
+
+#### 官方参考
+
+- Cloudflare Email Routing 启用流程：<https://developers.cloudflare.com/email-routing/get-started/enable-email-routing/>
+- Cloudflare Routing rules / Routes / Catch-all / Destination addresses：<https://developers.cloudflare.com/email-routing/setup/email-routing-addresses/>
+
+#### 最简单的使用方式
+
+1. 在 Cloudflare 后台先把你的域名收件转发规则配好
+2. 在插件里选择 `邮箱生成 = Cloudflare`
+3. 在 `CF 域名` 里点 `添加`
+4. 输入域名后点 `保存`
+5. 以后直接从下拉框切换当前使用的域名
+6. 点击 `获取`，插件就会基于这个域名生成一个随机邮箱
 
 ### `Password`
 
@@ -148,6 +314,7 @@ Step 3 使用的注册邮箱。
 - 手动输入：使用你自定义的密码
 - 可通过输入框右侧的眼睛图标切换显示
 - 配置会自动保存，也可以点击右侧 `保存` 按钮手动保存一次
+- 右上角 `配置` 按钮支持导出当前配置到 JSON 文件，也支持从 JSON 文件覆盖导入配置
 
 扩展会把本轮实际使用的密码同步回侧边栏，便于查看和复制。
 
@@ -186,14 +353,16 @@ Step 3 使用的注册邮箱。
 
 1. Step 1 获取 CPA OAuth 链接
 2. Step 2 打开 OpenAI 注册页
-3. 尝试自动获取 Duck 邮箱
-4. 如果 Duck 自动获取失败，暂停并等待你在侧边栏填写邮箱后点击 `Continue`
-5. 继续执行 Step 3 ~ Step 9
+3. 根据 `Mail` 选择邮箱来源
+4. 如果 `Mail = Hotmail`，会从账号池自动分配一个可用账号
+5. 如果不是 Hotmail，则按当前“邮箱生成”配置尝试自动获取邮箱（Duck 或 Cloudflare）
+6. 如果自动获取失败，暂停并等待你在侧边栏填写邮箱后点击 `Continue`
+7. 继续执行 Step 3 ~ Step 9
 
 也就是说：
 
-- 如果 Duck 邮箱可自动获取，整套流程更接近全自动
-- 如果 Duck 自动获取失败，后台会先自动重试 5 次；仍失败时，Auto 才会在邮箱阶段暂停
+- 如果邮箱可自动获取，整套流程更接近全自动
+- 如果自动获取失败，后台会先自动重试 5 次；仍失败时，Auto 才会在邮箱阶段暂停
 - Auto 的暂停状态会保存在会话状态中，重新打开侧边栏后仍可继续
 - 如果你在 Auto 暂停时改为手动点步骤或跳过步骤，面板会先确认并停止 Auto，再切回手动控制
 - 选择 `继续当前` 时，后台不会先做大而全的前置校验，而是从当前步骤状态直接继续；缺什么条件，就在运行到那一步时再报错或暂停
@@ -221,7 +390,7 @@ Step 3 使用的注册邮箱。
 
 ### Step 3: Fill Email / Password
 
-- 如果侧边栏邮箱为空，会先尝试自动获取 DuckDuckGo 邮箱；失败时再提示手动粘贴
+- 如果侧边栏邮箱为空，会先按当前“邮箱生成”配置自动获取邮箱；失败时再提示手动粘贴
 - 自动填写邮箱
 - 如页面先要求邮箱，再进入密码页，会自动切页继续填写
 - 使用自定义密码或自动生成密码
@@ -233,10 +402,11 @@ Step 3 使用的注册邮箱。
 
 根据 `Mail` 配置，轮询邮箱并提取 6 位验证码。
 
-进入邮箱轮询前，脚本会先确认认证页是否已经进入验证码页面；如果密码页出现 `糟糕，出错了 / Operation timed out` 并带有 `重试` 按钮，会先自动点击 `重试`、回到密码页重新提交，再继续等待验证码页面。
+进入邮箱轮询前，脚本会先确认认证页是否已经进入验证码页面；如果密码页出现 `糟糕，出错了 / 操作超时（Operation timed out）` 并带有 `重试` 按钮，会先自动点击 `重试`、回到密码页重新提交，再继续等待验证码页面。
 
 支持：
 
+- `Hotmail`（Microsoft Graph 邮件接口）
 - `content/qq-mail.js`
 - `content/mail-163.js`
 - `content/inbucket-mail.js`
@@ -299,6 +469,9 @@ Step 3 使用的注册邮箱。
 
 - 步骤 9 会拒绝任何不是真实 `/auth/callback`，或缺少 `code` / `state` 的本地回调地址
 - 成功后的清理只会针对 `/auth` 这一类真实回调标签页，不会再泛化清理任意 localhost 路径
+- 侧边栏可切换“本地 CPA”策略，默认是 `全部回调`
+- 选择 `全部回调` 时，即使 CPA 部署在本地，也会执行步骤 9
+- 选择 `跳过第9步` 时，仅当本地 CPA 且步骤 8 已拿到回调地址时，才会直接跳过步骤 9
 
 回到 CPA 面板：
 
@@ -359,6 +532,7 @@ Step 3 使用的注册邮箱。
 - 邮箱服务
 - Inbucket 主机
 - Inbucket 邮箱名
+- Hotmail 账号池与对应令牌
 - 兜底开关
 
 特点：
@@ -378,6 +552,7 @@ data/names.js              随机姓名、生日数据
 content/utils.js           通用工具：等待元素、点击、日志、停止控制
 content/vps-panel.js       CPA 面板步骤：Step 1 / Step 9
 content/signup-page.js     OpenAI 注册/登录页步骤：Step 2 / 3 / 5 / 6 / 8
+hotmail-utils.js           Hotmail 收信相关通用辅助
 content/duck-mail.js       Duck 邮箱自动获取
 content/qq-mail.js         QQ 邮箱验证码轮询
 content/mail-163.js        163 邮箱验证码轮询
@@ -405,9 +580,9 @@ sidepanel/                 侧边栏 UI
 - 给脚本准备一个相对独立的 mailbox
 - 避免收件箱里混入过多无关邮件
 
-### 3. Duck 自动获取失败时直接手填
+### 3. 自动获取失败时直接手填
 
-如果 Duck 页面打不开、未登录或按钮变化：
+如果 Duck 页面打不开、Cloudflare 域名未配置、未登录或按钮变化：
 
 - 直接在 `Email` 输入框中粘贴邮箱
 - 手动点 `Step 3` 时，如果邮箱为空，脚本会先自动尝试获取 Duck 邮箱；失败后再改为手填

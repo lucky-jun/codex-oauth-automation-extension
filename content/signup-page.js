@@ -188,6 +188,12 @@ async function prepareLoginCodeFlow(timeout = 15000) {
     return { ready: true, mode: 'verification_page' };
   }
 
+  const initialRestartSignal = getStep7RestartFromStep6Signal();
+  if (initialRestartSignal) {
+    log('步骤 7：检测到登录页超时报错，准备回到步骤 6 重新发起登录验证码流程...', 'warn');
+    return initialRestartSignal;
+  }
+
   const start = Date.now();
   let switchClickCount = 0;
   let lastSwitchAttemptAt = 0;
@@ -212,6 +218,12 @@ async function prepareLoginCodeFlow(timeout = 15000) {
       continue;
     }
 
+    const restartSignal = getStep7RestartFromStep6Signal();
+    if (restartSignal) {
+      log('步骤 7：检测到登录页超时报错，准备回到步骤 6 重新发起登录验证码流程...', 'warn');
+      return restartSignal;
+    }
+
     const passwordInput = document.querySelector('input[type="password"]');
     const switchTrigger = findOneTimeCodeLoginTrigger();
 
@@ -221,9 +233,10 @@ async function prepareLoginCodeFlow(timeout = 15000) {
       loggedPasswordPage = false;
       log('步骤 7：检测到密码页，正在切换到一次性验证码登录...');
       await humanPause(350, 900);
+      const verificationRequestedAt = Date.now();
       simulateClick(switchTrigger);
       await sleep(1200);
-      continue;
+      return { ready: true, mode: 'verification_switch', verificationRequestedAt };
     }
 
     if (passwordInput && !loggedPasswordPage) {
@@ -239,7 +252,10 @@ async function prepareLoginCodeFlow(timeout = 15000) {
 
 async function resendVerificationCode(step, timeout = 45000) {
   if (step === 7) {
-    await prepareLoginCodeFlow();
+    const prepareResult = await prepareLoginCodeFlow();
+    if (prepareResult?.restartFromStep6) {
+      return prepareResult;
+    }
   }
 
   const start = Date.now();
@@ -357,15 +373,16 @@ async function step3_fillEmailPassword(payload) {
   fillInput(passwordInput, payload.password);
   log('步骤 3：密码已填写');
 
-  // Report complete BEFORE submit, because submit causes page navigation
-  // which kills the content script connection
-  reportComplete(3, { email });
-
-  // Submit the form (page will navigate away after this)
-  await sleep(500);
   const submitBtn = document.querySelector('button[type="submit"]')
     || await waitForElementByText('button', /continue|sign\s*up|submit|注册|创建|create/i, 5000).catch(() => null);
 
+  // Report complete BEFORE submit, because submit causes page navigation
+  // which kills the content script connection
+  const signupVerificationRequestedAt = submitBtn ? Date.now() : null;
+  reportComplete(3, { email, signupVerificationRequestedAt });
+
+  // Submit the form (page will navigate away after this)
+  await sleep(500);
   if (submitBtn) {
     await humanPause(500, 1300);
     simulateClick(submitBtn);
@@ -379,11 +396,13 @@ async function step3_fillEmailPassword(payload) {
 
 const INVALID_VERIFICATION_CODE_PATTERN = /代码不正确|验证码不正确|验证码错误|code\s+(?:is\s+)?incorrect|invalid\s+code|incorrect\s+code|try\s+again/i;
 const VERIFICATION_PAGE_PATTERN = /检查您的收件箱|输入我们刚刚向|重新发送电子邮件|重新发送验证码|验证码|代码不正确|email\s+verification/i;
-const OAUTH_CONSENT_PAGE_PATTERN = /使用\s*ChatGPT\s*登录到\s*Codex|login\s+to\s+codex|log\s+in\s+to\s+codex|authorize|授权/i;
+const OAUTH_CONSENT_PAGE_PATTERN = /使用\s*ChatGPT\s*登录到\s*Codex|sign\s+in\s+to\s+codex(?:\s+with\s+chatgpt)?|login\s+to\s+codex|log\s+in\s+to\s+codex|authorize|授权/i;
+const OAUTH_CONSENT_FORM_SELECTOR = 'form[action*="/sign-in-with-chatgpt/" i][action*="/consent" i]';
+const CONTINUE_ACTION_PATTERN = /继续|continue/i;
 const ADD_PHONE_PAGE_PATTERN = /add[\s-]*phone|添加手机号|手机号码|手机号|phone\s+number|telephone/i;
 const STEP5_SUBMIT_ERROR_PATTERN = /无法根据该信息创建帐户|请重试|unable\s+to\s+create\s+(?:your\s+)?account|couldn'?t\s+create\s+(?:your\s+)?account|something\s+went\s+wrong|invalid\s+(?:birthday|birth|date)|生日|出生日期/i;
-const SIGNUP_PASSWORD_ERROR_TITLE_PATTERN = /糟糕，出错了|something\s+went\s+wrong|oops/i;
-const SIGNUP_PASSWORD_ERROR_DETAIL_PATTERN = /operation\s+timed\s+out|timed\s+out|请求超时|操作超时/i;
+const AUTH_TIMEOUT_ERROR_TITLE_PATTERN = /糟糕，出错了|something\s+went\s+wrong|oops/i;
+const AUTH_TIMEOUT_ERROR_DETAIL_PATTERN = /operation\s+timed\s+out|timed\s+out|请求超时|操作超时/i;
 const SIGNUP_EMAIL_EXISTS_PATTERN = /与此电子邮件地址相关联的帐户已存在|account\s+associated\s+with\s+this\s+email\s+address\s+already\s+exists|email\s+address.*already\s+exists/i;
 
 function getVerificationErrorText() {
@@ -432,16 +451,60 @@ function getPageTextSnapshot() {
     .trim();
 }
 
+function getOAuthConsentForm() {
+  return document.querySelector(OAUTH_CONSENT_FORM_SELECTOR);
+}
+
 function getPrimaryContinueButton() {
+  const consentForm = getOAuthConsentForm();
+  if (consentForm) {
+    const formButtons = Array.from(
+      consentForm.querySelectorAll('button[type="submit"], input[type="submit"], [role="button"]')
+    );
+
+    const formContinueButton = formButtons.find((el) => {
+      if (!isVisibleElement(el)) return false;
+
+      const ddActionName = el.getAttribute?.('data-dd-action-name') || '';
+      return ddActionName === 'Continue' || CONTINUE_ACTION_PATTERN.test(getActionText(el));
+    });
+    if (formContinueButton) {
+      return formContinueButton;
+    }
+
+    const firstVisibleSubmit = formButtons.find(isVisibleElement);
+    if (firstVisibleSubmit) {
+      return firstVisibleSubmit;
+    }
+  }
+
   const continueBtn = document.querySelector(
-    'button[type="submit"][data-dd-action-name="Continue"], button[type="submit"]._primary_3rdp0_107'
+    `${OAUTH_CONSENT_FORM_SELECTOR} button[type="submit"], button[type="submit"][data-dd-action-name="Continue"], button[type="submit"]._primary_3rdp0_107`
   );
   if (continueBtn && isVisibleElement(continueBtn)) {
     return continueBtn;
   }
 
   const buttons = document.querySelectorAll('button, [role="button"]');
-  return Array.from(buttons).find((el) => isVisibleElement(el) && /继续|Continue/i.test(el.textContent || '')) || null;
+  return Array.from(buttons).find((el) => {
+    if (!isVisibleElement(el)) return false;
+
+    const ddActionName = el.getAttribute?.('data-dd-action-name') || '';
+    return ddActionName === 'Continue' || CONTINUE_ACTION_PATTERN.test(getActionText(el));
+  }) || null;
+}
+
+function isOAuthConsentPage() {
+  const pageText = getPageTextSnapshot();
+  if (OAUTH_CONSENT_PAGE_PATTERN.test(pageText)) {
+    return true;
+  }
+
+  if (getOAuthConsentForm()) {
+    return true;
+  }
+
+  return /\bcodex\b/i.test(pageText) && /\bchatgpt\b/i.test(pageText) && Boolean(getPrimaryContinueButton());
 }
 
 function isVerificationPageStillVisible() {
@@ -466,13 +529,17 @@ function isAddPhonePageReady() {
   return ADD_PHONE_PAGE_PATTERN.test(getPageTextSnapshot());
 }
 
+function isLoginPage() {
+  return /\/log-in(?:[/?#]|$)/i.test(location.pathname || '');
+}
+
 function isStep8Ready() {
   const continueBtn = getPrimaryContinueButton();
   if (!continueBtn) return false;
   if (isVerificationPageStillVisible()) return false;
   if (isAddPhonePageReady()) return false;
 
-  return OAUTH_CONSENT_PAGE_PATTERN.test(getPageTextSnapshot());
+  return isOAuthConsentPage();
 }
 
 function normalizeInlineText(text) {
@@ -610,29 +677,50 @@ function getSignupPasswordSubmitButton({ allowDisabled = false } = {}) {
   }) || null;
 }
 
-function getSignupRetryButton() {
+function getAuthRetryButton({ allowDisabled = false } = {}) {
   const direct = document.querySelector('button[data-dd-action-name="Try again"]');
-  if (direct && isVisibleElement(direct) && isActionEnabled(direct)) {
+  if (direct && isVisibleElement(direct) && (allowDisabled || isActionEnabled(direct))) {
     return direct;
   }
 
   const candidates = document.querySelectorAll('button, [role="button"]');
   return Array.from(candidates).find((el) => {
-    if (!isVisibleElement(el) || !isActionEnabled(el)) return false;
+    if (!isVisibleElement(el) || (!allowDisabled && !isActionEnabled(el))) return false;
     const text = getActionText(el);
     return /重试|try\s+again/i.test(text);
   }) || null;
 }
 
-function isSignupPasswordErrorPage() {
-  if (!isSignupPasswordPage()) return false;
+function matchesAuthTimeoutErrorPage(pathPattern) {
+  if (!pathPattern.test(location.pathname || '')) return false;
   const text = getPageTextSnapshot();
   return Boolean(
-    getSignupRetryButton()
-    && (SIGNUP_PASSWORD_ERROR_TITLE_PATTERN.test(text)
-      || SIGNUP_PASSWORD_ERROR_DETAIL_PATTERN.test(text)
-      || SIGNUP_PASSWORD_ERROR_TITLE_PATTERN.test(document.title || ''))
+    getAuthRetryButton({ allowDisabled: true })
+    && (AUTH_TIMEOUT_ERROR_TITLE_PATTERN.test(text)
+      || AUTH_TIMEOUT_ERROR_DETAIL_PATTERN.test(text)
+      || AUTH_TIMEOUT_ERROR_TITLE_PATTERN.test(document.title || ''))
   );
+}
+
+function isSignupPasswordErrorPage() {
+  return matchesAuthTimeoutErrorPage(/\/create-account\/password(?:[/?#]|$)/i);
+}
+
+function buildStep7RestartFromStep6Marker(reason, url = location.href) {
+  return `STEP7_RESTART_FROM_STEP6::${reason || 'unknown'}::${url || ''}`;
+}
+
+function getStep7RestartFromStep6Signal() {
+  if (!isLoginPage() || !matchesAuthTimeoutErrorPage(/\/log-in(?:[/?#]|$)/i)) {
+    return null;
+  }
+
+  return {
+    error: buildStep7RestartFromStep6Marker('login_timeout_error_page', location.href),
+    restartFromStep6: true,
+    reason: 'login_timeout_error_page',
+    url: location.href,
+  };
 }
 
 function isSignupEmailAlreadyExistsPage() {
@@ -651,7 +739,7 @@ function inspectSignupVerificationState() {
   if (isSignupPasswordErrorPage()) {
     return {
       state: 'error',
-      retryButton: getSignupRetryButton(),
+      retryButton: getAuthRetryButton({ allowDisabled: true }),
     };
   }
 
@@ -804,7 +892,10 @@ async function fillVerificationCode(step, payload) {
   log(`步骤 ${step}：正在填写验证码：${code}`);
 
   if (step === 7) {
-    await prepareLoginCodeFlow();
+    const prepareResult = await prepareLoginCodeFlow();
+    if (prepareResult?.restartFromStep6) {
+      return prepareResult;
+    }
   }
 
   // Find code input — could be a single input or multiple separate inputs
@@ -946,11 +1037,10 @@ async function step8_findAndClick() {
 }
 
 function getStep8State() {
-  const pageText = getPageTextSnapshot();
   const continueBtn = getPrimaryContinueButton();
   const state = {
     url: location.href,
-    consentPage: OAUTH_CONSENT_PAGE_PATTERN.test(pageText),
+    consentPage: isOAuthConsentPage(),
     consentReady: isStep8Ready(),
     verificationPage: isVerificationPageStillVisible(),
     addPhonePage: isAddPhonePageReady(),

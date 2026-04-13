@@ -56,6 +56,8 @@ const bundle = [
   extractFunction('isLocalhostOAuthCallbackUrl'),
   extractFunction('isLocalhostOAuthCallbackTabMatch'),
   extractFunction('closeLocalhostCallbackTabs'),
+  extractFunction('buildLocalhostCleanupPrefix'),
+  extractFunction('closeTabsByUrlPrefix'),
   extractFunction('handleStepData'),
 ].join('\n');
 
@@ -159,7 +161,11 @@ return {
 
   await api.handleStepData(9, { localhostUrl: codexCallbackUrl });
   let snapshot = api.snapshot();
-  assert.deepStrictEqual(snapshot.removedBatches, [[1]], 'handleStepData(9) 只应关闭当前 callback 页');
+  assert.deepStrictEqual(
+    snapshot.removedBatches,
+    [[1], [2]],
+    'handleStepData(9) 应先关闭当前 callback 页，再按同源首段路径清理残留页'
+  );
   assert.strictEqual(
     snapshot.currentState.tabRegistry['signup-page'],
     null,

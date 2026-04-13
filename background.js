@@ -1,13 +1,45 @@
 // background.js — Service Worker: orchestration, state, tab management, message routing
 
-importScripts('data/names.js');
+importScripts('data/names.js', 'hotmail-utils.js', 'content/activation-utils.js');
+
+const {
+  buildHotmailGraphMessagesUrl,
+  extractVerificationCodeFromMessage,
+  filterHotmailAccountsByUsage,
+  getLatestHotmailMessage,
+  getHotmailGraphRequestConfig,
+  getHotmailVerificationPollConfig,
+  getHotmailVerificationRequestTimestamp,
+  normalizeHotmailMailApiMessages,
+  pickHotmailAccountForRun,
+  pickVerificationMessage,
+  pickVerificationMessageWithFallback,
+  pickVerificationMessageWithTimeFallback,
+  shouldClearHotmailCurrentSelection,
+} = self.HotmailUtils;
+const {
+  isRecoverableStep9AuthFailure,
+} = self.MultiPageActivationUtils;
+const buildHotmailMailApiLatestUrl = buildHotmailGraphMessagesUrl;
+const getHotmailMailApiRequestConfig = getHotmailGraphRequestConfig;
 
 const LOG_PREFIX = '[MultiPage:bg]';
 const DUCK_AUTOFILL_URL = 'https://duckduckgo.com/email/settings/autofill';
+const HOTMAIL_PROVIDER = 'hotmail-api';
+const HOTMAIL_MAILBOXES = ['INBOX', 'Junk'];
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const HUMAN_STEP_DELAY_MIN = 700;
 const HUMAN_STEP_DELAY_MAX = 2200;
 const STEP7_RESTART_MAX_ROUNDS = 8;
+const SUB2API_STEP1_RESPONSE_TIMEOUT_MS = 90000;
+const SUB2API_STEP9_RESPONSE_TIMEOUT_MS = 120000;
+const DEFAULT_SUB2API_URL = 'https://sub2api.hisence.fun/admin/accounts';
+const DEFAULT_SUB2API_GROUP_NAME = 'codex';
+const DEFAULT_SUB2API_REDIRECT_URI = 'http://localhost:1455/auth/callback';
+const AUTO_RUN_ALARM_NAME = 'scheduled-auto-run';
+const AUTO_RUN_DELAY_MIN_MINUTES = 1;
+const AUTO_RUN_DELAY_MAX_MINUTES = 1440;
+const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
 
 initializeSessionStorageAccess();
 
@@ -16,16 +48,30 @@ initializeSessionStorageAccess();
 // ============================================================
 
 const PERSISTED_SETTING_DEFAULTS = {
+  panelMode: 'cpa', // Step 1 / Step 9 的来源模式：cpa | sub2api。
   vpsUrl: '', // VPS 面板地址，可手动填写。
   vpsPassword: '', // VPS 面板登录密码，可手动填写。
+  localCpaStep9Mode: DEFAULT_LOCAL_CPA_STEP9_MODE, // 本地 CPA 的第 9 步策略：submit | bypass。
+  sub2apiUrl: DEFAULT_SUB2API_URL, // SUB2API 管理后台地址。
+  sub2apiEmail: '', // SUB2API 登录邮箱。
+  sub2apiPassword: '', // SUB2API 登录密码。
+  sub2apiGroupName: DEFAULT_SUB2API_GROUP_NAME, // SUB2API 创建账号时绑定的分组名。
   customPassword: '', // 自定义账号密码；留空时由程序自动生成随机密码。
   autoRunSkipFailures: false, // 自动运行遇到失败步骤后，是否继续执行后续流程。
-  mailProvider: '163', // 验证码邮箱来源，当前支持 163 / inbucket。
+  autoRunDelayEnabled: false, // 自动运行是否启用启动前倒计时。
+  autoRunDelayMinutes: 30, // 自动运行倒计时分钟数。
+  mailProvider: '163', // 验证码邮箱来源（163 / 163-vip / qq / inbucket）。
+  emailGenerator: 'duck', // 注册邮箱生成方式：duck / cloudflare。
   inbucketHost: '', // 仅当 mailProvider 为 inbucket 时填写 Inbucket 地址，其他情况保持为空。
   inbucketMailbox: '', // 仅当 mailProvider 为 inbucket 时填写邮箱名，其他情况保持为空。
+  cloudflareDomain: '', // 仅当 emailGenerator=cloudflare 时填写自定义域名。
+  cloudflareDomains: [], // Cloudflare 可选域名列表。
+  hotmailAccounts: [],
 };
 
 const PERSISTED_SETTING_KEYS = Object.keys(PERSISTED_SETTING_DEFAULTS);
+const SETTINGS_EXPORT_SCHEMA_VERSION = 1;
+const SETTINGS_EXPORT_FILENAME_PREFIX = 'multipage-settings';
 
 const DEFAULT_STATE = {
   currentStep: 0, // 当前流程执行到的步骤编号。
@@ -41,6 +87,10 @@ const DEFAULT_STATE = {
   lastSignupCode: null, // 注册验证码，运行时由程序自动读取并写入。
   lastLoginCode: null, // 登录验证码，运行时由程序自动读取并写入。
   localhostUrl: null, // 运行时捕获到的 localhost 回调地址，不要手动预填。
+  sub2apiSessionId: null, // SUB2API OpenAI Auth 会话 ID。
+  sub2apiOAuthState: null, // SUB2API OpenAI Auth state。
+  sub2apiGroupId: null, // SUB2API 目标分组 ID。
+  sub2apiDraftName: null, // SUB2API 本轮预生成的账号名称。
   flowStartTime: null, // 当前流程开始时间。
   tabRegistry: {}, // 程序维护的标签页注册表。
   sourceLastUrls: {}, // 各来源页面最近一次打开的地址记录。
@@ -51,15 +101,175 @@ const DEFAULT_STATE = {
   autoRunCurrentRun: 0, // 自动运行当前执行到第几轮。
   autoRunTotalRuns: 1, // 自动运行计划总轮数。
   autoRunAttemptRun: 0, // 当前轮次的重试序号。
+  scheduledAutoRunAt: null, // 自动运行计划启动时间戳。
+  scheduledAutoRunPlan: null, // 自动运行计划参数快照。
+  signupVerificationRequestedAt: null,
+  loginVerificationRequestedAt: null,
+  currentHotmailAccountId: null,
 };
+
+function normalizeAutoRunDelayMinutes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return PERSISTED_SETTING_DEFAULTS.autoRunDelayMinutes;
+  }
+  return Math.min(
+    AUTO_RUN_DELAY_MAX_MINUTES,
+    Math.max(AUTO_RUN_DELAY_MIN_MINUTES, Math.floor(numeric))
+  );
+}
+
+function normalizeRunCount(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 1;
+  }
+  return Math.min(50, Math.max(1, Math.floor(numeric)));
+}
+
+function normalizeScheduledAutoRunPlan(plan) {
+  if (!plan || typeof plan !== 'object') {
+    return null;
+  }
+
+  return {
+    totalRuns: normalizeRunCount(plan.totalRuns),
+    autoRunSkipFailures: Boolean(plan.autoRunSkipFailures),
+    mode: plan.mode === 'continue' ? 'continue' : 'restart',
+  };
+}
+
+function normalizeEmailGenerator(value = '') {
+  return String(value || '').trim().toLowerCase() === 'cloudflare' ? 'cloudflare' : 'duck';
+}
+
+function normalizePanelMode(value = '') {
+  return String(value || '').trim().toLowerCase() === 'sub2api' ? 'sub2api' : 'cpa';
+}
+
+function normalizeMailProvider(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  switch (normalized) {
+    case HOTMAIL_PROVIDER:
+    case '163':
+    case '163-vip':
+    case 'qq':
+    case 'inbucket':
+      return normalized;
+    default:
+      return PERSISTED_SETTING_DEFAULTS.mailProvider;
+  }
+}
+
+function normalizeLocalCpaStep9Mode(value = '') {
+  return String(value || '').trim().toLowerCase() === 'bypass'
+    ? 'bypass'
+    : DEFAULT_LOCAL_CPA_STEP9_MODE;
+}
+
+function normalizeCloudflareDomain(rawValue = '') {
+  let value = String(rawValue || '').trim().toLowerCase();
+  if (!value) return '';
+  value = value.replace(/^@+/, '');
+  value = value.replace(/^https?:\/\//, '');
+  value = value.replace(/\/.*$/, '');
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(value)) return '';
+  return value;
+}
+
+function normalizeCloudflareDomains(values) {
+  const normalizedDomains = [];
+  const seen = new Set();
+
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = normalizeCloudflareDomain(value);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    normalizedDomains.push(normalized);
+  }
+
+  return normalizedDomains;
+}
+
+function normalizePersistentSettingValue(key, value) {
+  switch (key) {
+    case 'panelMode':
+      return normalizePanelMode(value);
+    case 'vpsUrl':
+      return String(value || '').trim();
+    case 'vpsPassword':
+      return String(value || '');
+    case 'localCpaStep9Mode':
+      return normalizeLocalCpaStep9Mode(value);
+    case 'sub2apiUrl':
+      return String(value || '').trim();
+    case 'sub2apiEmail':
+      return String(value || '').trim();
+    case 'sub2apiPassword':
+      return String(value || '');
+    case 'sub2apiGroupName':
+      return String(value || '').trim();
+    case 'customPassword':
+      return String(value || '');
+    case 'autoRunSkipFailures':
+    case 'autoRunDelayEnabled':
+      return Boolean(value);
+    case 'autoRunDelayMinutes':
+      return normalizeAutoRunDelayMinutes(value);
+    case 'mailProvider':
+      return normalizeMailProvider(value);
+    case 'emailGenerator':
+      return normalizeEmailGenerator(value);
+    case 'inbucketHost':
+      return String(value || '').trim();
+    case 'inbucketMailbox':
+      return String(value || '').trim();
+    case 'cloudflareDomain':
+      return normalizeCloudflareDomain(value);
+    case 'cloudflareDomains':
+      return normalizeCloudflareDomains(value);
+    case 'hotmailAccounts':
+      return normalizeHotmailAccounts(value);
+    default:
+      return value;
+  }
+}
+
+function buildPersistentSettingsPayload(input = {}, options = {}) {
+  const { fillDefaults = false, requireKnownKeys = false } = options;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('\u914d\u7f6e\u5185\u5bb9\u683c\u5f0f\u65e0\u6548\u3002');
+  }
+
+  const payload = {};
+  let matchedKeyCount = 0;
+  for (const key of PERSISTED_SETTING_KEYS) {
+    if (input[key] !== undefined) {
+      payload[key] = normalizePersistentSettingValue(key, input[key]);
+      matchedKeyCount += 1;
+    } else if (fillDefaults) {
+      payload[key] = normalizePersistentSettingValue(key, PERSISTED_SETTING_DEFAULTS[key]);
+    }
+  }
+
+  if (requireKnownKeys && matchedKeyCount === 0) {
+    throw new Error('\u914d\u7f6e\u6587\u4ef6\u4e2d\u6ca1\u6709\u53ef\u8bc6\u522b\u7684\u914d\u7f6e\u5185\u5bb9\u3002');
+  }
+
+  if (payload.cloudflareDomains) {
+    const domains = normalizeCloudflareDomains(payload.cloudflareDomains);
+    if (payload.cloudflareDomain && !domains.includes(payload.cloudflareDomain)) {
+      domains.unshift(payload.cloudflareDomain);
+    }
+    payload.cloudflareDomains = domains;
+  }
+
+  return payload;
+}
 
 async function getPersistedSettings() {
   const stored = await chrome.storage.local.get(PERSISTED_SETTING_KEYS);
-  return {
-    ...PERSISTED_SETTING_DEFAULTS,
-    ...stored,
-    autoRunSkipFailures: Boolean(stored.autoRunSkipFailures ?? PERSISTED_SETTING_DEFAULTS.autoRunSkipFailures),
-  };
+  return buildPersistentSettingsPayload(stored, { fillDefaults: true });
 }
 
 async function getState() {
@@ -85,22 +295,79 @@ async function initializeSessionStorageAccess() {
 
 async function setState(updates) {
   console.log(LOG_PREFIX, 'storage.set:', JSON.stringify(updates).slice(0, 200));
-  await chrome.storage.session.set(updates);
+  if (Object.keys(updates || {}).length > 0) {
+    await chrome.storage.session.set(updates);
+  }
 }
 
 async function setPersistentSettings(updates) {
-  const persistedUpdates = {};
-  for (const key of PERSISTED_SETTING_KEYS) {
-    if (updates[key] !== undefined) {
-      persistedUpdates[key] = key === 'autoRunSkipFailures'
-        ? Boolean(updates[key])
-        : updates[key];
-    }
-  }
+  const persistedUpdates = buildPersistentSettingsPayload(updates);
 
   if (Object.keys(persistedUpdates).length > 0) {
     await chrome.storage.local.set(persistedUpdates);
   }
+}
+
+function buildSettingsExportFilename(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${SETTINGS_EXPORT_FILENAME_PREFIX}-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.json`;
+}
+
+async function exportSettingsBundle() {
+  const settings = await getPersistedSettings();
+  const bundle = {
+    schemaVersion: SETTINGS_EXPORT_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    extensionVersion: chrome.runtime.getManifest().version,
+    settings,
+  };
+
+  return {
+    fileName: buildSettingsExportFilename(),
+    fileContent: JSON.stringify(bundle, null, 2),
+  };
+}
+
+async function importSettingsBundle(configBundle) {
+  const state = await ensureManualInteractionAllowed('\u5bfc\u5165\u914d\u7f6e');
+  if (Object.values(state.stepStatuses || {}).some((status) => status === 'running')) {
+    throw new Error('\u5f53\u524d\u6709\u6b65\u9aa4\u6b63\u5728\u6267\u884c\uff0c\u65e0\u6cd5\u5bfc\u5165\u914d\u7f6e\u3002');
+  }
+  if (!configBundle || typeof configBundle !== 'object' || Array.isArray(configBundle)) {
+    throw new Error('\u914d\u7f6e\u6587\u4ef6\u5185\u5bb9\u65e0\u6548\u3002');
+  }
+
+  const schemaVersion = Number(configBundle.schemaVersion);
+  if (schemaVersion !== SETTINGS_EXPORT_SCHEMA_VERSION) {
+    throw new Error(`\u4ec5\u652f\u6301\u5bfc\u5165 schemaVersion=${SETTINGS_EXPORT_SCHEMA_VERSION} \u7684\u914d\u7f6e\u6587\u4ef6\u3002`);
+  }
+  if (!configBundle.settings || typeof configBundle.settings !== 'object' || Array.isArray(configBundle.settings)) {
+    throw new Error('\u914d\u7f6e\u6587\u4ef6\u7f3a\u5c11 settings \u914d\u7f6e\u6bb5\u3002');
+  }
+
+  const importedSettings = buildPersistentSettingsPayload(configBundle.settings, {
+    fillDefaults: true,
+    requireKnownKeys: true,
+  });
+
+  await setPersistentSettings(importedSettings);
+
+  const sessionUpdates = {
+    ...importedSettings,
+    currentHotmailAccountId: null,
+  };
+  if (importedSettings.mailProvider === HOTMAIL_PROVIDER) {
+    sessionUpdates.email = null;
+  }
+
+  await setState(sessionUpdates);
+  broadcastDataUpdate({
+    ...importedSettings,
+    currentHotmailAccountId: null,
+    ...(sessionUpdates.email !== undefined ? { email: sessionUpdates.email } : {}),
+  });
+
+  return getState();
 }
 
 function broadcastDataUpdate(payload) {
@@ -110,9 +377,13 @@ function broadcastDataUpdate(payload) {
   }).catch(() => { });
 }
 
-async function setEmailState(email) {
+async function setEmailStateSilently(email) {
   await setState({ email });
   broadcastDataUpdate({ email });
+}
+
+async function setEmailState(email) {
+  await setEmailStateSilently(email);
   if (email) {
     await resumeAutoRunIfWaitingForEmail();
   }
@@ -174,6 +445,617 @@ function generatePassword() {
   return pw.split('').sort(() => Math.random() - 0.5).join('');
 }
 
+function normalizeHotmailAccount(account = {}) {
+  const normalizedLastAuthAt = Number.isFinite(Number(account.lastAuthAt)) ? Number(account.lastAuthAt) : 0;
+  const normalizedStatus = String(
+    account.status
+    || (normalizedLastAuthAt > 0 || account.accessToken ? 'authorized' : 'pending')
+  );
+  return {
+    id: String(account.id || crypto.randomUUID()),
+    email: String(account.email || '').trim(),
+    password: String(account.password || ''),
+    clientId: String(account.clientId || '').trim(),
+    accessToken: String(account.accessToken || ''),
+    refreshToken: String(account.refreshToken || ''),
+    expiresAt: Number.isFinite(Number(account.expiresAt)) ? Number(account.expiresAt) : 0,
+    status: normalizedStatus,
+    enabled: account.enabled !== undefined ? Boolean(account.enabled) : true,
+    used: Boolean(account.used),
+    lastUsedAt: Number.isFinite(Number(account.lastUsedAt)) ? Number(account.lastUsedAt) : 0,
+    lastAuthAt: normalizedLastAuthAt,
+    lastError: String(account.lastError || ''),
+  };
+}
+
+function normalizeHotmailAccounts(accounts) {
+  if (!Array.isArray(accounts)) return [];
+
+  const deduped = new Map();
+  for (const account of accounts) {
+    const normalized = normalizeHotmailAccount(account);
+    if (!normalized.email && !normalized.id) continue;
+    deduped.set(normalized.id, normalized);
+  }
+  return [...deduped.values()];
+}
+
+function findHotmailAccount(accounts, accountId) {
+  return normalizeHotmailAccounts(accounts).find((account) => account.id === accountId) || null;
+}
+
+function isHotmailProvider(stateOrProvider) {
+  const provider = typeof stateOrProvider === 'string'
+    ? stateOrProvider
+    : stateOrProvider?.mailProvider;
+  return provider === HOTMAIL_PROVIDER;
+}
+
+async function syncHotmailAccounts(accounts) {
+  const normalized = normalizeHotmailAccounts(accounts);
+  await setPersistentSettings({ hotmailAccounts: normalized });
+  await setState({ hotmailAccounts: normalized });
+  broadcastDataUpdate({ hotmailAccounts: normalized });
+  return normalized;
+}
+
+async function upsertHotmailAccount(input) {
+  const state = await getState();
+  const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const normalizedEmail = String(input?.email || '').trim().toLowerCase();
+  const existing = input?.id
+    ? findHotmailAccount(accounts, input.id)
+    : accounts.find((account) => account.email.toLowerCase() === normalizedEmail) || null;
+  const credentialsChanged = !existing
+    || (input?.clientId !== undefined && String(input.clientId).trim() !== existing.clientId)
+    || (input?.refreshToken !== undefined && String(input.refreshToken).trim() !== existing.refreshToken)
+    || (input?.email !== undefined && String(input.email).trim().toLowerCase() !== existing.email.toLowerCase());
+  const normalized = normalizeHotmailAccount({
+    ...(existing || {}),
+    ...(credentialsChanged ? {
+      accessToken: '',
+      expiresAt: 0,
+      status: 'pending',
+      lastAuthAt: 0,
+      lastError: '',
+    } : {}),
+    ...input,
+    id: input?.id || existing?.id || crypto.randomUUID(),
+  });
+
+  const nextAccounts = existing
+    ? accounts.map((account) => (account.id === normalized.id ? normalized : account))
+    : [...accounts, normalized];
+
+  await syncHotmailAccounts(nextAccounts);
+  return normalized;
+}
+
+async function deleteHotmailAccount(accountId) {
+  const state = await getState();
+  const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const nextAccounts = accounts.filter((account) => account.id !== accountId);
+  await syncHotmailAccounts(nextAccounts);
+
+  if (state.currentHotmailAccountId === accountId) {
+    await setState({ currentHotmailAccountId: null });
+    if (isHotmailProvider(state)) {
+      await setEmailState(null);
+    }
+    broadcastDataUpdate({ currentHotmailAccountId: null });
+  }
+}
+
+async function deleteHotmailAccounts(mode = 'all') {
+  const state = await getState();
+  const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const targets = filterHotmailAccountsByUsage(accounts, mode);
+  const targetIds = new Set(targets.map((account) => account.id));
+  const nextAccounts = mode === 'used'
+    ? accounts.filter((account) => !targetIds.has(account.id))
+    : [];
+
+  await syncHotmailAccounts(nextAccounts);
+
+  if (state.currentHotmailAccountId && targetIds.has(state.currentHotmailAccountId)) {
+    await setState({ currentHotmailAccountId: null });
+    if (isHotmailProvider(state)) {
+      await setEmailState(null);
+    }
+    broadcastDataUpdate({ currentHotmailAccountId: null });
+  }
+
+  return {
+    deletedCount: targets.length,
+    remainingCount: nextAccounts.length,
+  };
+}
+
+async function patchHotmailAccount(accountId, updates = {}) {
+  const state = await getState();
+  const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const account = findHotmailAccount(accounts, accountId);
+  if (!account) {
+    throw new Error('未找到对应的 Hotmail 账号。');
+  }
+
+  const nextAccount = normalizeHotmailAccount({
+    ...account,
+    ...updates,
+    id: account.id,
+  });
+
+  await syncHotmailAccounts(accounts.map((item) => (item.id === account.id ? nextAccount : item)));
+
+  if (state.currentHotmailAccountId === account.id && shouldClearHotmailCurrentSelection(nextAccount)) {
+    await setState({ currentHotmailAccountId: null });
+    broadcastDataUpdate({ currentHotmailAccountId: null });
+    if (isHotmailProvider(state)) {
+      await setEmailState(null);
+    }
+  }
+
+  return nextAccount;
+}
+
+async function setCurrentHotmailAccount(accountId, options = {}) {
+  const { markUsed = false, syncEmail = true } = options;
+  const state = await getState();
+  const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const account = findHotmailAccount(accounts, accountId);
+  if (!account) {
+    throw new Error('未找到对应的 Hotmail 账号。');
+  }
+
+  if (markUsed) {
+    account.lastUsedAt = Date.now();
+    await syncHotmailAccounts(accounts.map((item) => (item.id === account.id ? account : item)));
+  }
+
+  await setState({ currentHotmailAccountId: account.id });
+  broadcastDataUpdate({ currentHotmailAccountId: account.id });
+  if (syncEmail) {
+    await setEmailState(account.email || null);
+  }
+  return account;
+}
+
+async function ensureHotmailAccountForFlow(options = {}) {
+  const { allowAllocate = true, markUsed = false, preferredAccountId = null } = options;
+  const state = await getState();
+  const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const isAccountAllocatable = (candidate) => Boolean(candidate)
+    && candidate.status === 'authorized'
+    && !candidate.used
+    && Boolean(candidate.refreshToken);
+
+  let account = null;
+  if (preferredAccountId) {
+    account = findHotmailAccount(accounts, preferredAccountId);
+  }
+  if (!account && state.currentHotmailAccountId) {
+    account = findHotmailAccount(accounts, state.currentHotmailAccountId);
+  }
+  if ((!account || !isAccountAllocatable(account)) && allowAllocate) {
+    account = pickHotmailAccountForRun(accounts, {});
+  }
+
+  if (!account) {
+    throw new Error('没有可用的 Hotmail 账号。请先在侧边栏添加至少一个带刷新令牌（refresh token）的账号。');
+  }
+  if (!isAccountAllocatable(account)) {
+    throw new Error(`Hotmail 账号 ${account.email || account.id} 尚未就绪，无法读取邮件。`);
+  }
+
+  return setCurrentHotmailAccount(account.id, { markUsed, syncEmail: true });
+}
+
+async function requestHotmailMailApiLegacy(account, mailbox = 'INBOX') {
+  if (!account?.email) {
+    throw new Error('Hotmail 账号缺少邮箱地址。');
+  }
+  if (!account?.clientId) {
+    throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少客户端 ID。`);
+  }
+  if (!account?.refreshToken) {
+    throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少刷新令牌（refresh token）。`);
+  }
+
+  const url = buildHotmailMailApiLatestUrl({
+    clientId: account.clientId,
+    email: account.email,
+    refreshToken: account.refreshToken,
+    mailbox,
+    responseType: 'json',
+  });
+  const { timeoutMs } = getHotmailMailApiRequestConfig();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+
+  let response;
+  try {
+    response = await fetch(url, { method: 'GET', signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Hotmail API 请求超时（>${Math.round(timeoutMs / 1000)} 秒）：${mailbox}`);
+    }
+    throw new Error(`Hotmail API 请求失败：${err.message}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+
+  if (!response.ok) {
+    const errorText = payload?.message || payload?.error || payload?.msg || text || `HTTP ${response.status}`;
+    throw new Error(`Hotmail API 请求失败：${errorText}`);
+  }
+
+  if (payload && payload.success === false) {
+    const errorText = payload?.message || payload?.msg || payload?.error || '未知错误';
+    throw new Error(`Hotmail API 返回失败：${errorText}`);
+  }
+
+  return {
+    mailbox,
+    payload,
+    messages: normalizeHotmailMailApiMessages(payload?.data),
+    nextRefreshToken: String(payload?.new_refresh_token || payload?.newRefreshToken || '').trim(),
+  };
+}
+
+function applyHotmailApiResultToAccountLegacy(account, apiResult) {
+  const nextRefreshToken = String(apiResult?.nextRefreshToken || '').trim();
+  return {
+    ...account,
+    accessToken: '',
+    expiresAt: 0,
+    refreshToken: nextRefreshToken || account.refreshToken,
+    status: 'authorized',
+    lastAuthAt: Date.now(),
+    lastError: '',
+  };
+}
+
+async function fetchHotmailMailboxMessagesLegacy(account, mailboxes = HOTMAIL_MAILBOXES) {
+  let workingAccount = normalizeHotmailAccount(account);
+  const mailboxResults = [];
+
+  for (const mailbox of mailboxes) {
+    const result = await requestHotmailMailApiLegacy(workingAccount, mailbox);
+    workingAccount = applyHotmailApiResultToAccountLegacy(workingAccount, result);
+    mailboxResults.push({
+      mailbox,
+      count: result.messages.length,
+      messages: result.messages.map((message) => ({ ...message, mailbox })),
+    });
+  }
+
+  const savedAccount = await upsertHotmailAccount(workingAccount);
+  return {
+    account: savedAccount,
+    mailboxResults,
+    messages: mailboxResults.flatMap((item) => item.messages),
+  };
+}
+
+function isHotmailAccessTokenUsable(account, now = Date.now()) {
+  return Boolean(account?.accessToken)
+    && Number(account?.expiresAt || 0) > now + 60_000;
+}
+
+async function refreshHotmailAccessToken(account) {
+  if (!account?.email) {
+    throw new Error('Hotmail 账号缺少邮箱地址。');
+  }
+  if (!account?.clientId) {
+    throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少客户端 ID。`);
+  }
+  if (!account?.refreshToken) {
+    throw new Error(`Hotmail 账号 ${account.email || account.id} 缺少刷新令牌（refresh token）。`);
+  }
+
+  const { timeoutMs, scopes, tokenUrl } = getHotmailGraphRequestConfig();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+  const formData = new URLSearchParams();
+  formData.set('client_id', account.clientId);
+  formData.set('grant_type', 'refresh_token');
+  formData.set('refresh_token', account.refreshToken);
+  formData.set('scope', scopes.join(' '));
+  formData.set('redirect_uri', 'https://login.microsoftonline.com/common/oauth2/nativeclient');
+
+  let response;
+  try {
+    response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: formData.toString(),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const error = new Error(
+      err?.name === 'AbortError'
+        ? `Hotmail 令牌刷新超时（>${Math.round(timeoutMs / 1000)} 秒）`
+        : `Hotmail 令牌刷新失败：${err.message}`
+    );
+    error.code = 'HOTMAIL_TOKEN_REFRESH_FAILED';
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+
+  if (!response.ok || !payload?.access_token) {
+    const rawErrorText = payload?.error_description || payload?.error?.message || payload?.error || payload?.message || text || `HTTP ${response.status}`;
+    const isCrossOriginError = typeof rawErrorText === 'string' && rawErrorText.includes('AADSTS90023');
+    const errorText = isCrossOriginError
+      ? `Azure AD 拒绝了跨域令牌请求（AADSTS90023）。请在 Azure AD 应用注册中将应用平台改为"单页应用程序（SPA）"，并将重定向 URI 设置为 https://login.microsoftonline.com/common/oauth2/nativeclient，或将应用类型改为"移动和桌面应用程序（Native）"。`
+      : rawErrorText;
+    const error = new Error(`Hotmail 令牌刷新失败：${errorText}`);
+    error.code = 'HOTMAIL_TOKEN_REFRESH_FAILED';
+    throw error;
+  }
+
+  const expiresInSeconds = Math.max(60, Number(payload.expires_in || payload.expiresIn || 0) || 3600);
+  return normalizeHotmailAccount({
+    ...account,
+    accessToken: String(payload.access_token || ''),
+    refreshToken: String(payload.refresh_token || '').trim() || account.refreshToken,
+    expiresAt: Date.now() + expiresInSeconds * 1000,
+    status: 'authorized',
+    lastAuthAt: Date.now(),
+    lastError: '',
+  });
+}
+
+async function requestHotmailGraphMessages(account, mailbox = 'INBOX') {
+  const { timeoutMs, pageSize, messageFields } = getHotmailGraphRequestConfig();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+  const url = buildHotmailGraphMessagesUrl({
+    mailbox,
+    top: pageSize,
+    selectFields: messageFields,
+  });
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${account.accessToken}`,
+      },
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const error = new Error(
+      err?.name === 'AbortError'
+        ? `Hotmail 邮件请求超时（>${Math.round(timeoutMs / 1000)} 秒）：${mailbox}`
+        : `Hotmail 邮件请求失败：${err.message}`
+    );
+    error.code = 'HOTMAIL_GRAPH_REQUEST_FAILED';
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+
+  if (!response.ok) {
+    const errorText = payload?.error?.message || payload?.error_description || payload?.message || text || `HTTP ${response.status}`;
+    const error = new Error(`Hotmail 邮件请求失败：${errorText}`);
+    error.code = response.status === 401 || response.status === 403
+      ? 'HOTMAIL_GRAPH_AUTH_FAILED'
+      : 'HOTMAIL_GRAPH_REQUEST_FAILED';
+    throw error;
+  }
+
+  return {
+    mailbox,
+    payload,
+    messages: normalizeHotmailMailApiMessages(payload?.value),
+  };
+}
+
+function buildHotmailAuthFailureAccount(account, errorMessage) {
+  return normalizeHotmailAccount({
+    ...account,
+    accessToken: '',
+    expiresAt: 0,
+    status: 'error',
+    lastError: String(errorMessage || ''),
+  });
+}
+
+async function fetchHotmailMailboxMessages(account, mailboxes = HOTMAIL_MAILBOXES) {
+  let workingAccount = normalizeHotmailAccount(account);
+  const mailboxResults = [];
+
+  try {
+    if (!isHotmailAccessTokenUsable(workingAccount)) {
+      workingAccount = await refreshHotmailAccessToken(workingAccount);
+    }
+
+    for (const mailbox of mailboxes) {
+      let result;
+      try {
+        result = await requestHotmailGraphMessages(workingAccount, mailbox);
+      } catch (err) {
+        if (err?.code !== 'HOTMAIL_GRAPH_AUTH_FAILED') {
+          throw err;
+        }
+
+        workingAccount = await refreshHotmailAccessToken({
+          ...workingAccount,
+          accessToken: '',
+          expiresAt: 0,
+        });
+        result = await requestHotmailGraphMessages(workingAccount, mailbox);
+      }
+
+      mailboxResults.push({
+        mailbox,
+        count: result.messages.length,
+        messages: result.messages.map((message) => ({ ...message, mailbox })),
+      });
+    }
+  } catch (err) {
+    if (err?.code === 'HOTMAIL_TOKEN_REFRESH_FAILED' || err?.code === 'HOTMAIL_GRAPH_AUTH_FAILED') {
+      const failedAccount = buildHotmailAuthFailureAccount(workingAccount, err.message);
+      await upsertHotmailAccount(failedAccount);
+    }
+    throw err;
+  }
+
+  const savedAccount = await upsertHotmailAccount(workingAccount);
+  return {
+    account: savedAccount,
+    mailboxResults,
+    messages: mailboxResults.flatMap((item) => item.messages),
+  };
+}
+
+async function verifyHotmailAccount(accountId) {
+  const state = await getState();
+  const account = findHotmailAccount(state.hotmailAccounts, accountId);
+  if (!account) {
+    throw new Error('未找到需要校验的 Hotmail 账号。');
+  }
+
+  const result = await fetchHotmailMailboxMessages(account, ['INBOX']);
+  return {
+    account: result.account,
+    messageCount: result.mailboxResults[0]?.count || 0,
+  };
+}
+
+async function testHotmailAccountMailAccess(accountId) {
+  const state = await getState();
+  const account = findHotmailAccount(state.hotmailAccounts, accountId);
+  if (!account) {
+    throw new Error('未找到需要测试的 Hotmail 账号。');
+  }
+
+  const result = await fetchHotmailMailboxMessages(account, HOTMAIL_MAILBOXES);
+  const latestMessage = getLatestHotmailMessage(result.messages);
+  const latestCode = latestMessage ? extractVerificationCodeFromMessage(latestMessage) : null;
+
+  return {
+    account: result.account,
+    accountId: result.account.id,
+    email: result.account.email,
+    messageCount: result.messages.length,
+    latestSubject: latestMessage?.subject || '',
+    latestMailbox: latestMessage?.mailbox || '',
+    latestCode: latestCode || '',
+    inboxCount: result.mailboxResults.find((item) => item.mailbox === 'INBOX')?.count || 0,
+    junkCount: result.mailboxResults.find((item) => item.mailbox === 'Junk')?.count || 0,
+  };
+}
+
+async function pollHotmailVerificationCode(step, state, pollPayload = {}) {
+  await addLog(`步骤 ${step}：正在确定 Hotmail 收信账号...`, 'info');
+  let account = await ensureHotmailAccountForFlow({
+    allowAllocate: true,
+    markUsed: false,
+    preferredAccountId: state.currentHotmailAccountId || null,
+  });
+  await addLog(`步骤 ${step}：当前使用 Hotmail 账号 ${account.email} 轮询收件箱。`, 'info');
+
+  const maxAttempts = Number(pollPayload.maxAttempts) || 5;
+  const intervalMs = Number(pollPayload.intervalMs) || 3000;
+  let lastError = null;
+
+  function summarizeMessagesForLog(messages) {
+    return (messages || [])
+      .slice()
+      .sort((left, right) => {
+        const leftTime = Date.parse(left.receivedDateTime || '') || 0;
+        const rightTime = Date.parse(right.receivedDateTime || '') || 0;
+        return rightTime - leftTime;
+      })
+      .slice(0, 3)
+      .map((message) => {
+        const receivedAt = message?.receivedDateTime || '未知时间';
+        const sender = message?.from?.emailAddress?.address || '未知发件人';
+        const subject = message?.subject || '（无主题）';
+        const preview = String(message?.bodyPreview || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        return `[${message.mailbox || 'INBOX'}] ${receivedAt} | ${sender} | ${subject} | ${preview}`;
+      })
+      .join(' || ');
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    throwIfStopped();
+    try {
+      await addLog(`步骤 ${step}：正在轮询 Hotmail 邮件（${attempt}/${maxAttempts}）...`, 'info');
+      const fetchResult = await fetchHotmailMailboxMessages(account, HOTMAIL_MAILBOXES);
+      account = fetchResult.account;
+      const matchResult = pickVerificationMessageWithTimeFallback(fetchResult.messages, {
+        afterTimestamp: pollPayload.filterAfterTimestamp || 0,
+        senderFilters: pollPayload.senderFilters || [],
+        subjectFilters: pollPayload.subjectFilters || [],
+        excludeCodes: pollPayload.excludeCodes || [],
+      });
+      const match = matchResult.match;
+
+      if (match?.code) {
+        const mailboxLabel = match.message?.mailbox || 'INBOX';
+        if (matchResult.usedRelaxedFilters) {
+          const fallbackLabel = matchResult.usedTimeFallback ? '宽松匹配 + 时间回退' : '宽松匹配';
+          await addLog(`步骤 ${step}：严格规则未命中，已改用 ${fallbackLabel} 并命中 Hotmail ${mailboxLabel} 验证码。`, 'warn');
+        }
+        await addLog(`步骤 ${step}：已在 Hotmail ${mailboxLabel} 中找到验证码：${match.code}`, 'ok');
+        return {
+          ok: true,
+          code: match.code,
+          emailTimestamp: match.receivedAt || Date.now(),
+          mailId: match.message?.id || '',
+        };
+      }
+
+      lastError = new Error(`步骤 ${step}：暂未在 Hotmail 收件箱中找到匹配验证码（${attempt}/${maxAttempts}）。`);
+      await addLog(lastError.message, attempt === maxAttempts ? 'warn' : 'info');
+      const mailSummary = summarizeMessagesForLog(fetchResult.messages);
+      if (mailSummary) {
+        await addLog(`步骤 ${step}：最近邮件样本：${mailSummary}`, 'info');
+      }
+    } catch (err) {
+      lastError = err;
+      await addLog(`步骤 ${step}：Hotmail 收件箱轮询失败：${err.message}`, 'warn');
+    }
+
+    if (attempt < maxAttempts) {
+      await sleepWithStop(intervalMs);
+    }
+  }
+
+  throw lastError || new Error(`步骤 ${step}：未在 Hotmail 收件箱中找到新的匹配验证码。`);
+}
+
 // ============================================================
 // Tab Registry
 // ============================================================
@@ -219,6 +1101,26 @@ function parseUrlSafely(rawUrl) {
   }
 }
 
+function normalizeSub2ApiUrl(rawUrl) {
+  const input = (rawUrl || '').trim() || DEFAULT_SUB2API_URL;
+  const withProtocol = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+  const parsed = new URL(withProtocol);
+  if (!parsed.pathname || parsed.pathname === '/') {
+    parsed.pathname = '/admin/accounts';
+  }
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+function getPanelMode(state = {}) {
+  return state.panelMode === 'sub2api' ? 'sub2api' : 'cpa';
+}
+
+function getPanelModeLabel(modeOrState) {
+  const mode = typeof modeOrState === 'string' ? modeOrState : getPanelMode(modeOrState);
+  return mode === 'sub2api' ? 'SUB2API' : 'CPA';
+}
+
 function isSignupPageHost(hostname = '') {
   return ['auth0.openai.com', 'auth.openai.com', 'accounts.openai.com'].includes(hostname);
 }
@@ -249,7 +1151,9 @@ function isLocalCpaUrl(rawUrl) {
 }
 
 function shouldBypassStep9ForLocalCpa(state) {
-  return Boolean(state?.localhostUrl) && isLocalCpaUrl(state?.vpsUrl);
+  return normalizeLocalCpaStep9Mode(state?.localCpaStep9Mode) === 'bypass'
+    && Boolean(state?.localhostUrl)
+    && isLocalCpaUrl(state?.vpsUrl);
 }
 
 function matchesSourceUrlFamily(source, candidateUrl, referenceUrl) {
@@ -275,6 +1179,14 @@ function matchesSourceUrlFamily(source, candidateUrl, referenceUrl) {
       return Boolean(reference)
         && candidate.origin === reference.origin
         && candidate.pathname === reference.pathname;
+    case 'sub2api-panel':
+      return Boolean(reference)
+        && candidate.origin === reference.origin
+        && (
+          candidate.pathname.startsWith('/admin/accounts')
+          || candidate.pathname.startsWith('/login')
+          || candidate.pathname === '/'
+        );
     default:
       return false;
   }
@@ -353,6 +1265,37 @@ async function closeLocalhostCallbackTabs(callbackUrl, options = {}) {
   }
 
   await addLog(`已关闭 ${matchedIds.length} 个匹配当前 OAuth callback 的 localhost 残留标签页。`, 'info');
+  return matchedIds.length;
+}
+
+function buildLocalhostCleanupPrefix(rawUrl) {
+  if (!isLocalhostOAuthCallbackUrl(rawUrl)) return '';
+  const parsed = parseUrlSafely(rawUrl);
+  if (!parsed) return '';
+
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (!segments.length) {
+    return parsed.origin;
+  }
+
+  return `${parsed.origin}/${segments[0]}`;
+}
+
+async function closeTabsByUrlPrefix(prefix, options = {}) {
+  if (!prefix) return 0;
+
+  const { excludeTabIds = [] } = options;
+  const excluded = new Set(excludeTabIds.filter(id => Number.isInteger(id)));
+  const tabs = await chrome.tabs.query({});
+  const matchedIds = tabs
+    .filter((tab) => Number.isInteger(tab.id) && !excluded.has(tab.id))
+    .filter((tab) => typeof tab.url === 'string' && tab.url.startsWith(prefix))
+    .map((tab) => tab.id);
+
+  if (!matchedIds.length) return 0;
+
+  await chrome.tabs.remove(matchedIds).catch(() => { });
+  await addLog(`已关闭 ${matchedIds.length} 个匹配 ${prefix} 的 localhost 残留标签页。`, 'info');
   return matchedIds.length;
 }
 
@@ -769,23 +1712,27 @@ async function reuseOrCreateTab(source, url, options = {}) {
 // ============================================================
 
 async function sendToContentScript(source, message, options = {}) {
+  throwIfStopped();
   const { responseTimeoutMs = getContentScriptResponseTimeoutMs(message) } = options;
   const registry = await getTabRegistry();
   const entry = registry[source];
 
   if (!entry || !entry.ready) {
+    throwIfStopped();
     console.log(LOG_PREFIX, `${source} not ready, queuing command`);
     return queueCommand(source, message);
   }
 
   // Verify tab is still alive
   const alive = await isTabAlive(source);
+  throwIfStopped();
   if (!alive) {
     // Tab was closed — queue the command, it will be sent when tab is reopened
     console.log(LOG_PREFIX, `${source} tab was closed, queuing command`);
     return queueCommand(source, message);
   }
 
+  throwIfStopped();
   console.log(LOG_PREFIX, `Sending to ${source} (tab ${entry.tabId}):`, message.type);
   return sendTabMessageWithTimeout(entry.tabId, source, message, responseTimeoutMs);
 }
@@ -922,10 +1869,12 @@ function getSourceLabel(source) {
     'sidepanel': '侧边栏',
     'signup-page': '认证页',
     'vps-panel': 'CPA 面板',
+    'sub2api-panel': 'SUB2API 后台',
     'qq-mail': 'QQ 邮箱',
     'mail-163': '163 邮箱',
     'inbucket-mail': 'Inbucket 邮箱',
     'duck-mail': 'Duck 邮箱',
+    'hotmail-api': 'Hotmail（微软 Graph）',
   };
   return labels[source] || source || '未知来源';
 }
@@ -962,7 +1911,57 @@ function getErrorMessage(error) {
 
 function isVerificationMailPollingError(error) {
   const message = getErrorMessage(error);
-  return /未在 .*邮箱中找到新的匹配邮件|邮箱轮询结束，但未获取到验证码|无法获取新的(?:注册|登录)验证码|页面未能重新就绪|页面通信异常|did not respond in \d+s/i.test(message);
+  return /未在 .*邮箱中找到新的匹配邮件|未在 Hotmail 收件箱中找到新的匹配验证码|邮箱轮询结束，但未获取到验证码|无法获取新的(?:注册|登录)验证码|页面未能重新就绪|页面通信异常|did not respond in \d+s/i.test(message);
+}
+
+const STEP7_RESTART_FROM_STEP6_ERROR_CODE = 'STEP7_RESTART_FROM_STEP6';
+const STEP7_RESTART_FROM_STEP6_MARKER_PATTERN = /^STEP7_RESTART_FROM_STEP6::([^:]+)::(.*)$/;
+
+function createStep7RestartFromStep6Error(details = {}) {
+  const { reason = 'unknown', url = '' } = details || {};
+  const reasonLabel = reason === 'login_timeout_error_page'
+    ? '检测到登录页超时报错'
+    : '步骤 7 请求回到步骤 6';
+  const error = new Error(`步骤 7：${reasonLabel}。${url ? `URL: ${url}` : ''}`.trim());
+  error.code = STEP7_RESTART_FROM_STEP6_ERROR_CODE;
+  error.restartReason = reason;
+  error.restartUrl = url;
+  return error;
+}
+
+function parseStep7RestartFromStep6Marker(message) {
+  const normalized = getErrorMessage(message);
+  const match = normalized.match(STEP7_RESTART_FROM_STEP6_MARKER_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    reason: match[1] || 'unknown',
+    url: match[2] || '',
+  };
+}
+
+function getStep7RestartFromStep6Error(result) {
+  if (result?.restartFromStep6) {
+    return createStep7RestartFromStep6Error(result);
+  }
+
+  const parsed = parseStep7RestartFromStep6Marker(result?.error);
+  if (!parsed) {
+    return null;
+  }
+
+  return createStep7RestartFromStep6Error(parsed);
+}
+
+function isStep7RestartFromStep6Error(error) {
+  return error?.code === STEP7_RESTART_FROM_STEP6_ERROR_CODE
+    || Boolean(parseStep7RestartFromStep6Marker(error));
+}
+
+function isStep7RecoverableError(error) {
+  return isVerificationMailPollingError(error) || isStep7RestartFromStep6Error(error);
 }
 
 function isRestartCurrentAttemptError(error) {
@@ -970,7 +1969,13 @@ function isRestartCurrentAttemptError(error) {
   return /当前邮箱已存在，需要重新开始新一轮/.test(message);
 }
 
-function isStep9OAuthTimeoutError(error) {
+function isStep9RecoverableAuthError(error) {
+  const message = String(typeof error === 'string' ? error : error?.message || '');
+  return /STEP9_OAUTH_RETRY::/i.test(message)
+    || isRecoverableStep9AuthFailure(message);
+}
+
+function isLegacyStep9RecoverableAuthError(error) {
   const message = String(typeof error === 'string' ? error : error?.message || '');
   return /STEP9_OAUTH_TIMEOUT::|认证失败:\s*Timeout waiting for OAuth callback/i.test(message);
 }
@@ -996,9 +2001,15 @@ function getDownstreamStateResets(step) {
   if (step <= 1) {
     return {
       oauthUrl: null,
+      sub2apiSessionId: null,
+      sub2apiOAuthState: null,
+      sub2apiGroupId: null,
+      sub2apiDraftName: null,
       flowStartTime: null,
       password: null,
       lastEmailTimestamp: null,
+      signupVerificationRequestedAt: null,
+      loginVerificationRequestedAt: null,
       lastSignupCode: null,
       lastLoginCode: null,
       localhostUrl: null,
@@ -1008,6 +2019,8 @@ function getDownstreamStateResets(step) {
     return {
       password: null,
       lastEmailTimestamp: null,
+      signupVerificationRequestedAt: null,
+      loginVerificationRequestedAt: null,
       lastSignupCode: null,
       lastLoginCode: null,
       localhostUrl: null,
@@ -1016,6 +2029,8 @@ function getDownstreamStateResets(step) {
   if (step === 3 || step === 4) {
     return {
       lastEmailTimestamp: null,
+      signupVerificationRequestedAt: null,
+      loginVerificationRequestedAt: null,
       lastSignupCode: null,
       lastLoginCode: null,
       localhostUrl: null,
@@ -1024,6 +2039,7 @@ function getDownstreamStateResets(step) {
   if (step === 5 || step === 6 || step === 7) {
     return {
       lastLoginCode: null,
+      loginVerificationRequestedAt: null,
       localhostUrl: null,
     };
   }
@@ -1070,11 +2086,22 @@ function clearStopRequest() {
   stopRequested = false;
 }
 
+function getRunningSteps(statuses = {}) {
+  return Object.entries({ ...DEFAULT_STATE.stepStatuses, ...statuses })
+    .filter(([, status]) => status === 'running')
+    .map(([step]) => Number(step))
+    .sort((a, b) => a - b);
+}
+
 function getAutoRunStatusPayload(phase, payload = {}) {
   const currentRun = payload.currentRun ?? autoRunCurrentRun;
   const totalRuns = payload.totalRuns ?? autoRunTotalRuns;
   const attemptRun = payload.attemptRun ?? autoRunAttemptRun;
-  const autoRunning = phase === 'running' || phase === 'waiting_email' || phase === 'retrying';
+  const rawScheduledAt = phase === 'scheduled'
+    ? (payload.scheduledAt ?? payload.scheduledAutoRunAt ?? null)
+    : null;
+  const scheduledAt = rawScheduledAt === null ? null : Number(rawScheduledAt);
+  const autoRunning = phase === 'scheduled' || phase === 'running' || phase === 'waiting_step' || phase === 'waiting_email' || phase === 'retrying';
 
   return {
     autoRunning,
@@ -1082,18 +2109,26 @@ function getAutoRunStatusPayload(phase, payload = {}) {
     autoRunCurrentRun: currentRun,
     autoRunTotalRuns: totalRuns,
     autoRunAttemptRun: attemptRun,
+    scheduledAutoRunAt: Number.isFinite(scheduledAt) ? scheduledAt : null,
   };
 }
 
-async function broadcastAutoRunStatus(phase, payload = {}) {
+async function broadcastAutoRunStatus(phase, payload = {}, extraState = {}) {
+  const rawScheduledAt = phase === 'scheduled'
+    ? (payload.scheduledAt ?? payload.scheduledAutoRunAt ?? null)
+    : null;
   const statusPayload = {
     phase,
     currentRun: payload.currentRun ?? autoRunCurrentRun,
     totalRuns: payload.totalRuns ?? autoRunTotalRuns,
     attemptRun: payload.attemptRun ?? autoRunAttemptRun,
+    scheduledAt: rawScheduledAt === null ? null : Number(rawScheduledAt),
   };
 
-  await setState(getAutoRunStatusPayload(phase, statusPayload));
+  await setState({
+    ...extraState,
+    ...getAutoRunStatusPayload(phase, statusPayload),
+  });
   chrome.runtime.sendMessage({
     type: 'AUTO_RUN_STATUS',
     payload: statusPayload,
@@ -1101,11 +2136,217 @@ async function broadcastAutoRunStatus(phase, payload = {}) {
 }
 
 function isAutoRunLockedState(state) {
-  return Boolean(state.autoRunning) && (state.autoRunPhase === 'running' || state.autoRunPhase === 'retrying');
+  return Boolean(state.autoRunning) && (state.autoRunPhase === 'running' || state.autoRunPhase === 'waiting_step' || state.autoRunPhase === 'retrying');
 }
 
 function isAutoRunPausedState(state) {
   return Boolean(state.autoRunning) && state.autoRunPhase === 'waiting_email';
+}
+
+function isAutoRunScheduledState(state) {
+  const scheduledAt = state.scheduledAutoRunAt === null ? null : Number(state.scheduledAutoRunAt);
+  return Boolean(state.autoRunning)
+    && state.autoRunPhase === 'scheduled'
+    && Number.isFinite(scheduledAt)
+    && Boolean(normalizeScheduledAutoRunPlan(state.scheduledAutoRunPlan));
+}
+
+function formatAutoRunScheduleTime(timestamp) {
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    hour12: false,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+async function setAutoRunDelayEnabledState(enabled) {
+  const normalized = Boolean(enabled);
+  await setPersistentSettings({ autoRunDelayEnabled: normalized });
+  await setState({ autoRunDelayEnabled: normalized });
+  broadcastDataUpdate({ autoRunDelayEnabled: normalized });
+}
+
+async function ensureScheduledAutoRunAlarm(scheduledAt) {
+  if (!Number.isFinite(scheduledAt) || scheduledAt <= Date.now()) {
+    return false;
+  }
+
+  const existingAlarm = await chrome.alarms.get(AUTO_RUN_ALARM_NAME);
+  if (!existingAlarm || Math.abs((existingAlarm.scheduledTime || 0) - scheduledAt) > 1000) {
+    await chrome.alarms.clear(AUTO_RUN_ALARM_NAME);
+    await chrome.alarms.create(AUTO_RUN_ALARM_NAME, { when: scheduledAt });
+  }
+
+  return true;
+}
+
+async function clearScheduledAutoRunAlarm() {
+  await chrome.alarms.clear(AUTO_RUN_ALARM_NAME);
+}
+
+async function scheduleAutoRun(totalRuns, options = {}) {
+  const state = await getState();
+  if (isAutoRunLockedState(state) || isAutoRunPausedState(state) || autoRunActive) {
+    throw new Error('自动运行已在进行中，请先停止后再重新计划。');
+  }
+  if (isAutoRunScheduledState(state)) {
+    throw new Error('已有自动运行倒计时计划，请先取消或立即开始。');
+  }
+
+  const delayMinutes = normalizeAutoRunDelayMinutes(options.delayMinutes);
+  const plan = normalizeScheduledAutoRunPlan({
+    totalRuns,
+    autoRunSkipFailures: options.autoRunSkipFailures,
+    mode: options.mode,
+  });
+  const scheduledAt = Date.now() + delayMinutes * 60 * 1000;
+
+  autoRunCurrentRun = 0;
+  autoRunTotalRuns = plan.totalRuns;
+  autoRunAttemptRun = 0;
+
+  await ensureScheduledAutoRunAlarm(scheduledAt);
+  await broadcastAutoRunStatus(
+    'scheduled',
+    {
+      currentRun: 0,
+      totalRuns: plan.totalRuns,
+      attemptRun: 0,
+      scheduledAt,
+    },
+    {
+      autoRunSkipFailures: plan.autoRunSkipFailures,
+      scheduledAutoRunPlan: plan,
+    }
+  );
+  await addLog(
+    `自动运行已计划：${delayMinutes} 分钟后启动（${formatAutoRunScheduleTime(scheduledAt)}），目标 ${plan.totalRuns} 轮。`,
+    'info'
+  );
+  return { ok: true, scheduledAt };
+}
+
+let scheduledAutoRunLaunching = false;
+
+async function launchScheduledAutoRun(trigger = 'alarm') {
+  if (scheduledAutoRunLaunching) {
+    return false;
+  }
+
+  scheduledAutoRunLaunching = true;
+  try {
+    const state = await getState();
+    if (!isAutoRunScheduledState(state)) {
+      return false;
+    }
+    if (autoRunActive) {
+      return false;
+    }
+
+    const plan = normalizeScheduledAutoRunPlan(state.scheduledAutoRunPlan);
+    if (!plan) {
+      await clearScheduledAutoRunAlarm();
+      await broadcastAutoRunStatus('idle', {
+        currentRun: 0,
+        totalRuns: 1,
+        attemptRun: 0,
+      }, {
+        scheduledAutoRunPlan: null,
+      });
+      return false;
+    }
+
+    await clearScheduledAutoRunAlarm();
+    if (trigger !== 'manual' && state.autoRunDelayEnabled) {
+      await setAutoRunDelayEnabledState(false);
+    }
+    await broadcastAutoRunStatus(
+      'running',
+      {
+        currentRun: 0,
+        totalRuns: plan.totalRuns,
+        attemptRun: 0,
+      },
+      {
+        autoRunSkipFailures: plan.autoRunSkipFailures,
+        scheduledAutoRunPlan: null,
+      }
+    );
+
+    clearStopRequest();
+    await addLog(
+      trigger === 'manual'
+        ? '已手动跳过倒计时，自动运行立即开始。'
+        : '倒计时结束，自动运行开始执行。',
+      'info'
+    );
+    autoRunLoop(plan.totalRuns, {
+      autoRunSkipFailures: plan.autoRunSkipFailures,
+      mode: plan.mode,
+    });
+    return true;
+  } finally {
+    scheduledAutoRunLaunching = false;
+  }
+}
+
+async function cancelScheduledAutoRun(options = {}) {
+  const state = await getState();
+  if (!isAutoRunScheduledState(state)) {
+    return false;
+  }
+  const plan = normalizeScheduledAutoRunPlan(state.scheduledAutoRunPlan);
+
+  await clearScheduledAutoRunAlarm();
+  autoRunCurrentRun = 0;
+  autoRunTotalRuns = plan?.totalRuns || 1;
+  autoRunAttemptRun = 0;
+  await broadcastAutoRunStatus(
+    'idle',
+    {
+      currentRun: 0,
+      totalRuns: plan?.totalRuns || 1,
+      attemptRun: 0,
+    },
+    {
+      scheduledAutoRunPlan: null,
+    }
+  );
+  if (options.logMessage !== false) {
+    await addLog(options.logMessage || '已取消自动运行倒计时计划。', 'warn');
+  }
+  return true;
+}
+
+async function restoreScheduledAutoRunIfNeeded() {
+  const state = await getState();
+  if (state.autoRunPhase !== 'scheduled') {
+    return;
+  }
+
+  const plan = normalizeScheduledAutoRunPlan(state.scheduledAutoRunPlan);
+  const scheduledAt = state.scheduledAutoRunAt === null ? null : Number(state.scheduledAutoRunAt);
+  if (!plan || !Number.isFinite(scheduledAt)) {
+    await clearScheduledAutoRunAlarm();
+    await broadcastAutoRunStatus('idle', {
+      currentRun: 0,
+      totalRuns: 1,
+      attemptRun: 0,
+    }, {
+      scheduledAutoRunPlan: null,
+    });
+    return;
+  }
+
+  if (scheduledAt <= Date.now()) {
+    await launchScheduledAutoRun('restore');
+    return;
+  }
+
+  await ensureScheduledAutoRunAlarm(scheduledAt);
 }
 
 async function ensureManualInteractionAllowed(actionLabel) {
@@ -1116,6 +2357,9 @@ async function ensureManualInteractionAllowed(actionLabel) {
   }
   if (isAutoRunPausedState(state)) {
     throw new Error(`自动流程当前已暂停。请点击“继续”，或先确认接管自动流程后再${actionLabel}。`);
+  }
+  if (isAutoRunScheduledState(state)) {
+    throw new Error(`自动流程已计划启动。请先取消计划，或立即开始后再${actionLabel}。`);
   }
 
   return state;
@@ -1179,6 +2423,7 @@ async function humanStepDelay(min = HUMAN_STEP_DELAY_MIN, max = HUMAN_STEP_DELAY
 }
 
 async function clickWithDebugger(tabId, rect) {
+  throwIfStopped();
   if (!tabId) {
     throw new Error('未找到用于调试点击的认证页面标签页。');
   }
@@ -1197,10 +2442,12 @@ async function clickWithDebugger(tabId, rect) {
   }
 
   try {
+    throwIfStopped();
     const x = Math.round(rect.centerX);
     const y = Math.round(rect.centerY);
 
     await chrome.debugger.sendCommand(target, 'Page.bringToFront');
+    throwIfStopped();
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x,
@@ -1209,6 +2456,7 @@ async function clickWithDebugger(tabId, rect) {
       buttons: 0,
       clickCount: 0,
     });
+    throwIfStopped();
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x,
@@ -1217,6 +2465,7 @@ async function clickWithDebugger(tabId, rect) {
       buttons: 1,
       clickCount: 1,
     });
+    throwIfStopped();
     await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x,
@@ -1313,6 +2562,7 @@ async function handleMessage(message, sender) {
 
     case 'RESET': {
       clearStopRequest();
+      await clearScheduledAutoRunAlarm();
       await resetState();
       await addLog('流程已重置', 'info');
       return { ok: true };
@@ -1337,11 +2587,42 @@ async function handleMessage(message, sender) {
 
     case 'AUTO_RUN': {
       clearStopRequest();
-      const totalRuns = message.payload?.totalRuns || 1;
+      const state = await getState();
+      if (isAutoRunScheduledState(state)) {
+        throw new Error('已有自动运行倒计时计划，请先取消或立即开始。');
+      }
+      const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
       const autoRunSkipFailures = Boolean(message.payload?.autoRunSkipFailures);
       const mode = message.payload?.mode === 'continue' ? 'continue' : 'restart';
       await setState({ autoRunSkipFailures });
       autoRunLoop(totalRuns, { autoRunSkipFailures, mode });  // fire-and-forget
+      return { ok: true };
+    }
+
+    case 'SCHEDULE_AUTO_RUN': {
+      clearStopRequest();
+      const totalRuns = normalizeRunCount(message.payload?.totalRuns || 1);
+      return await scheduleAutoRun(totalRuns, {
+        delayMinutes: message.payload?.delayMinutes,
+        autoRunSkipFailures: Boolean(message.payload?.autoRunSkipFailures),
+        mode: message.payload?.mode,
+      });
+    }
+
+    case 'START_SCHEDULED_AUTO_RUN_NOW': {
+      clearStopRequest();
+      const started = await launchScheduledAutoRun('manual');
+      if (!started) {
+        throw new Error('当前没有可立即开始的倒计时计划。');
+      }
+      return { ok: true };
+    }
+
+    case 'CANCEL_SCHEDULED_AUTO_RUN': {
+      const cancelled = await cancelScheduledAutoRun();
+      if (!cancelled) {
+        throw new Error('当前没有可取消的倒计时计划。');
+      }
       return { ok: true };
     }
 
@@ -1366,20 +2647,89 @@ async function handleMessage(message, sender) {
     }
 
     case 'SAVE_SETTING': {
-      const updates = {};
-      if (message.payload.vpsUrl !== undefined) updates.vpsUrl = message.payload.vpsUrl;
-      if (message.payload.vpsPassword !== undefined) updates.vpsPassword = message.payload.vpsPassword;
-      if (message.payload.customPassword !== undefined) updates.customPassword = message.payload.customPassword;
-      if (message.payload.autoRunSkipFailures !== undefined) updates.autoRunSkipFailures = Boolean(message.payload.autoRunSkipFailures);
-      if (message.payload.mailProvider !== undefined) updates.mailProvider = message.payload.mailProvider;
-      if (message.payload.inbucketHost !== undefined) updates.inbucketHost = message.payload.inbucketHost;
-      if (message.payload.inbucketMailbox !== undefined) updates.inbucketMailbox = message.payload.inbucketMailbox;
+      const updates = buildPersistentSettingsPayload(message.payload || {});
       await setPersistentSettings(updates);
       await setState(updates);
       return { ok: true };
     }
 
+    case 'EXPORT_SETTINGS': {
+      return { ok: true, ...(await exportSettingsBundle()) };
+    }
+
+    case 'IMPORT_SETTINGS': {
+      const state = await importSettingsBundle(message.payload?.config || null);
+      return { ok: true, state };
+    }
+
+    case 'UPSERT_HOTMAIL_ACCOUNT': {
+      const account = await upsertHotmailAccount(message.payload || {});
+      return { ok: true, account };
+    }
+
+    case 'DELETE_HOTMAIL_ACCOUNT': {
+      await deleteHotmailAccount(String(message.payload?.accountId || ''));
+      return { ok: true };
+    }
+
+    case 'DELETE_HOTMAIL_ACCOUNTS': {
+      const result = await deleteHotmailAccounts(String(message.payload?.mode || 'all'));
+      return { ok: true, ...result };
+    }
+
+    case 'SELECT_HOTMAIL_ACCOUNT': {
+      const account = await setCurrentHotmailAccount(String(message.payload?.accountId || ''), {
+        markUsed: false,
+        syncEmail: true,
+      });
+      return { ok: true, account };
+    }
+
+    case 'PATCH_HOTMAIL_ACCOUNT': {
+      const account = await patchHotmailAccount(
+        String(message.payload?.accountId || ''),
+        message.payload?.updates || {}
+      );
+      return { ok: true, account };
+    }
+
+    case 'VERIFY_HOTMAIL_ACCOUNT':
+    case 'AUTHORIZE_HOTMAIL_ACCOUNT': {
+      const accountId = String(message.payload?.accountId || '');
+      try {
+        const result = await verifyHotmailAccount(accountId);
+        await setCurrentHotmailAccount(result.account.id, { markUsed: false, syncEmail: true });
+        await addLog(`Hotmail 账号 ${result.account.email} 校验通过，可直接用于收信。`, 'ok');
+        return { ok: true, account: result.account, messageCount: result.messageCount };
+      } catch (err) {
+        const state = await getState();
+        const accounts = normalizeHotmailAccounts(state.hotmailAccounts);
+        const target = findHotmailAccount(accounts, accountId);
+        if (target) {
+          target.status = 'error';
+          target.lastError = err.message;
+          await syncHotmailAccounts(accounts.map((item) => (item.id === target.id ? target : item)));
+        }
+        throw err;
+      }
+    }
+
+    case 'TEST_HOTMAIL_ACCOUNT': {
+      const result = await testHotmailAccountMailAccess(String(message.payload?.accountId || ''));
+      return { ok: true, ...result };
+    }
+
     // Side panel data updates
+    case 'SET_EMAIL_STATE': {
+      const state = await getState();
+      if (isAutoRunLockedState(state)) {
+        throw new Error('自动流程运行中，当前不能手动修改邮箱。');
+      }
+      const email = String(message.payload?.email || '').trim() || null;
+      await setEmailStateSilently(email);
+      return { ok: true, email };
+    }
+
     case 'SAVE_EMAIL': {
       const state = await getState();
       if (isAutoRunLockedState(state)) {
@@ -1390,13 +2740,24 @@ async function handleMessage(message, sender) {
       return { ok: true, email: message.payload.email };
     }
 
+    case 'FETCH_GENERATED_EMAIL': {
+      clearStopRequest();
+      const state = await getState();
+      if (isAutoRunLockedState(state)) {
+        throw new Error('自动流程运行中，当前不能手动获取邮箱。');
+      }
+      const email = await fetchGeneratedEmail(state, message.payload || {});
+      await resumeAutoRun();
+      return { ok: true, email };
+    }
+
     case 'FETCH_DUCK_EMAIL': {
       clearStopRequest();
       const state = await getState();
       if (isAutoRunLockedState(state)) {
-        throw new Error('自动流程运行中，当前不能手动获取 Duck 邮箱。');
+        throw new Error('自动流程运行中，当前不能手动获取邮箱。');
       }
-      const email = await fetchDuckEmail(message.payload || {});
+      const email = await fetchGeneratedEmail(state, { ...(message.payload || {}), generator: 'duck' });
       await resumeAutoRun();
       return { ok: true, email };
     }
@@ -1418,17 +2779,46 @@ async function handleMessage(message, sender) {
 
 async function handleStepData(step, payload) {
   switch (step) {
-    case 1:
+    case 1: {
+      const updates = {};
       if (payload.oauthUrl) {
-        await setState({ oauthUrl: payload.oauthUrl });
+        updates.oauthUrl = payload.oauthUrl;
         broadcastDataUpdate({ oauthUrl: payload.oauthUrl });
       }
+      if (payload.sub2apiSessionId !== undefined) updates.sub2apiSessionId = payload.sub2apiSessionId || null;
+      if (payload.sub2apiOAuthState !== undefined) updates.sub2apiOAuthState = payload.sub2apiOAuthState || null;
+      if (payload.sub2apiGroupId !== undefined) updates.sub2apiGroupId = payload.sub2apiGroupId || null;
+      if (payload.sub2apiDraftName !== undefined) updates.sub2apiDraftName = payload.sub2apiDraftName || null;
+      if (Object.keys(updates).length) {
+        await setState(updates);
+      }
       break;
+    }
     case 3:
       if (payload.email) await setEmailState(payload.email);
+      if (payload.signupVerificationRequestedAt) {
+        await setState({ signupVerificationRequestedAt: payload.signupVerificationRequestedAt });
+      }
+      if (payload.loginVerificationRequestedAt) {
+        await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
+      }
+      break;
+    case 6:
+      if (payload.loginVerificationRequestedAt) {
+        await setState({ loginVerificationRequestedAt: payload.loginVerificationRequestedAt });
+      }
       break;
     case 4:
-      if (payload.emailTimestamp) await setState({ lastEmailTimestamp: payload.emailTimestamp });
+      await setState({
+        lastEmailTimestamp: payload.emailTimestamp || null,
+        signupVerificationRequestedAt: null,
+      });
+      break;
+    case 7:
+      await setState({
+        lastEmailTimestamp: payload.emailTimestamp || null,
+        loginVerificationRequestedAt: null,
+      });
       break;
     case 8:
       if (payload.localhostUrl) {
@@ -1442,6 +2832,18 @@ async function handleStepData(step, payload) {
     case 9: {
       if (payload.localhostUrl) {
         await closeLocalhostCallbackTabs(payload.localhostUrl);
+      }
+      const latestState = await getState();
+      if (latestState.currentHotmailAccountId && isHotmailProvider(latestState)) {
+        await patchHotmailAccount(latestState.currentHotmailAccountId, {
+          used: true,
+          lastUsedAt: Date.now(),
+        });
+        await addLog('当前 Hotmail 账号已自动标记为已用。', 'ok');
+      }
+      const localhostPrefix = buildLocalhostCleanupPrefix(payload.localhostUrl);
+      if (localhostPrefix) {
+        await closeTabsByUrlPrefix(localhostPrefix);
       }
       break;
     }
@@ -1468,7 +2870,7 @@ function waitForStepComplete(step, timeoutMs = 120000) {
     const timer = setTimeout(() => {
       stepWaiters.delete(step);
       console.warn(LOG_PREFIX, `[waitForStepComplete] timeout for step ${step} after ${timeoutMs}ms`);
-      reject(new Error(`Step ${step} timed out after ${timeoutMs / 1000}s`));
+      reject(new Error(`步骤 ${step} 等待超时（>${timeoutMs / 1000} 秒）`));
     }, timeoutMs);
 
     stepWaiters.set(step, {
@@ -1503,11 +2905,29 @@ async function completeStepFromBackground(step, payload = {}) {
   notifyStepComplete(step, payload);
 }
 
+async function waitForRunningStepsToFinish(payload = {}) {
+  let currentState = await getState();
+  let runningSteps = getRunningSteps(currentState.stepStatuses);
+  if (!runningSteps.length) {
+    return currentState;
+  }
+
+  await addLog(`自动继续：检测到步骤 ${runningSteps.join(', ')} 正在运行，等待完成后再继续自动流程...`, 'info');
+  await broadcastAutoRunStatus('waiting_step', payload);
+
+  while (runningSteps.length) {
+    await sleepWithStop(250);
+    currentState = await getState();
+    runningSteps = getRunningSteps(currentState.stepStatuses);
+  }
+
+  await addLog('自动继续：当前运行步骤已结束，准备按最新进度继续自动流程...', 'info');
+  return currentState;
+}
+
 async function markRunningStepsStopped() {
   const state = await getState();
-  const runningSteps = Object.entries(state.stepStatuses || {})
-    .filter(([, status]) => status === 'running')
-    .map(([step]) => Number(step));
+  const runningSteps = getRunningSteps(state.stepStatuses);
 
   for (const step of runningSteps) {
     await setStepStatus(step, 'stopped');
@@ -1516,6 +2936,17 @@ async function markRunningStepsStopped() {
 
 async function requestStop(options = {}) {
   const { logMessage = '已收到停止请求，正在取消当前操作...' } = options;
+  const state = await getState();
+
+  if (isAutoRunScheduledState(state) && !autoRunActive) {
+    await cancelScheduledAutoRun({
+      logMessage: options.logMessage === false
+        ? false
+        : (options.logMessage || '已取消自动运行倒计时计划。'),
+    });
+    return;
+  }
+
   if (stopRequested) return;
 
   stopRequested = true;
@@ -1631,6 +3062,47 @@ async function executeStepAndWait(step, delayAfter = 2000) {
   }
 }
 
+function getEmailGeneratorLabel(generator) {
+  return generator === 'cloudflare' ? 'Cloudflare 邮箱' : 'Duck 邮箱';
+}
+
+function generateCloudflareAliasLocalPart() {
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const digits = '0123456789';
+  const chars = [];
+
+  for (let i = 0; i < 6; i++) {
+    chars.push(letters[Math.floor(Math.random() * letters.length)]);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    chars.push(digits[Math.floor(Math.random() * digits.length)]);
+  }
+
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+
+  return chars.join('');
+}
+
+async function fetchCloudflareEmail(state, options = {}) {
+  throwIfStopped();
+  const latestState = state || await getState();
+  const domain = normalizeCloudflareDomain(latestState.cloudflareDomain);
+  if (!domain) {
+    throw new Error('Cloudflare 域名为空或格式无效。');
+  }
+
+  const localPart = String(options.localPart || '').trim().toLowerCase() || generateCloudflareAliasLocalPart();
+  const aliasEmail = `${localPart}@${domain}`;
+
+  await setEmailState(aliasEmail);
+  await addLog(`Cloudflare 邮箱：已生成 ${aliasEmail}`, 'ok');
+  return aliasEmail;
+}
+
 async function fetchDuckEmail(options = {}) {
   throwIfStopped();
   const { generateNew = true } = options;
@@ -1656,6 +3128,15 @@ async function fetchDuckEmail(options = {}) {
   return result.email;
 }
 
+async function fetchGeneratedEmail(state, options = {}) {
+  const currentState = state || await getState();
+  const generator = normalizeEmailGenerator(options.generator ?? currentState.emailGenerator);
+  if (generator === 'cloudflare') {
+    return fetchCloudflareEmail(currentState, options);
+  }
+  return fetchDuckEmail(options);
+}
+
 // ============================================================
 // Auto Run Flow
 // ============================================================
@@ -1664,7 +3145,7 @@ let autoRunActive = false;
 let autoRunCurrentRun = 0;
 let autoRunTotalRuns = 1;
 let autoRunAttemptRun = 0;
-const DUCK_EMAIL_MAX_ATTEMPTS = 5;
+const EMAIL_FETCH_MAX_ATTEMPTS = 5;
 const VERIFICATION_POLL_MAX_ROUNDS = 5;
 const AUTO_STEP_DELAYS = {
   1: 2000,
@@ -1699,27 +3180,45 @@ async function resumeAutoRunIfWaitingForEmail(options = {}) {
 
 async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
   const currentState = await getState();
+  if (isHotmailProvider(currentState)) {
+    const account = await ensureHotmailAccountForFlow({
+      allowAllocate: true,
+      markUsed: true,
+      preferredAccountId: null,
+    });
+    await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：已分配 Hotmail 账号 ${account.email}（第 ${attemptRuns} 次尝试）===`, 'ok');
+    return account.email;
+  }
+
   if (currentState.email) {
     return currentState.email;
   }
 
-  let lastDuckError = null;
-  for (let duckAttempt = 1; duckAttempt <= DUCK_EMAIL_MAX_ATTEMPTS; duckAttempt++) {
+  const generator = normalizeEmailGenerator(currentState.emailGenerator);
+  const generatorLabel = getEmailGeneratorLabel(generator);
+  let lastError = null;
+  for (let attempt = 1; attempt <= EMAIL_FETCH_MAX_ATTEMPTS; attempt++) {
     try {
-      if (duckAttempt > 1) {
-        await addLog(`Duck 邮箱：正在进行第 ${duckAttempt}/${DUCK_EMAIL_MAX_ATTEMPTS} 次自动获取重试...`, 'warn');
+      if (attempt > 1) {
+        await addLog(`${generatorLabel}：正在进行第 ${attempt}/${EMAIL_FETCH_MAX_ATTEMPTS} 次自动获取重试...`, 'warn');
       }
-      const duckEmail = await fetchDuckEmail({ generateNew: true });
-      await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：Duck 邮箱已就绪：${duckEmail}（第 ${attemptRuns} 次尝试，Duck 第 ${duckAttempt}/${DUCK_EMAIL_MAX_ATTEMPTS} 次获取）===`, 'ok');
-      return duckEmail;
+      const generatedEmail = await fetchGeneratedEmail(currentState, { generateNew: true, generator });
+      await addLog(
+        `=== 目标 ${targetRun}/${totalRuns} 轮：${generatorLabel}已就绪：${generatedEmail}（第 ${attemptRuns} 次尝试，第 ${attempt}/${EMAIL_FETCH_MAX_ATTEMPTS} 次获取）===`,
+        'ok'
+      );
+      return generatedEmail;
     } catch (err) {
-      lastDuckError = err;
-      await addLog(`Duck 邮箱自动获取失败（${duckAttempt}/${DUCK_EMAIL_MAX_ATTEMPTS}）：${err.message}`, 'warn');
+      lastError = err;
+      await addLog(`${generatorLabel}自动获取失败（${attempt}/${EMAIL_FETCH_MAX_ATTEMPTS}）：${err.message}`, 'warn');
+      if (generator === 'cloudflare' && /域名/.test(String(err.message || ''))) {
+        break;
+      }
     }
   }
 
-  await addLog(`Duck 邮箱自动获取已连续失败 ${DUCK_EMAIL_MAX_ATTEMPTS} 次：${lastDuckError?.message || '未知错误'}`, 'error');
-  await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮已暂停：请先获取 Duck 邮箱或手动粘贴邮箱，然后继续 ===`, 'warn');
+  await addLog(`${generatorLabel}自动获取已连续失败 ${EMAIL_FETCH_MAX_ATTEMPTS} 次：${lastError?.message || '未知错误'}`, 'error');
+  await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮已暂停：请先自动获取邮箱或手动粘贴邮箱，然后继续 ===`, 'warn');
   await broadcastAutoRunStatus('waiting_email', {
     currentRun: targetRun,
     totalRuns,
@@ -1777,14 +3276,23 @@ async function runAutoSequenceFromStep(startStep, context = {}) {
       await executeStepAndWait(step, AUTO_STEP_DELAYS[step]);
       step += 1;
     } catch (err) {
-      if (step === 9 && isStep9OAuthTimeoutError(err) && step9RestartAttempts < maxStep9RestartAttempts) {
+      const latestState = await getState();
+      const currentMail = getMailConfig(latestState);
+      const shouldRetryStep9 = step === 9
+        && (
+          isLegacyStep9RecoverableAuthError(err)
+          || (currentMail.provider === HOTMAIL_PROVIDER && isStep9RecoverableAuthError(err))
+        )
+        && step9RestartAttempts < maxStep9RestartAttempts;
+
+      if (shouldRetryStep9) {
         step9RestartAttempts += 1;
         await addLog(
-          `步骤 9：检测到 OAuth callback 超时，正在回到步骤 6 重新开始授权流程（${step9RestartAttempts}/${maxStep9RestartAttempts}）...`,
+          `步骤 9：检测到 CPA 认证失败，正在回到步骤 6 重新开始授权流程（${step9RestartAttempts}/${maxStep9RestartAttempts}）...`,
           'warn'
         );
         await invalidateDownstreamAfterStepRestart(6, {
-          logLabel: `步骤 9 超时后准备回到步骤 6 重试（${step9RestartAttempts}/${maxStep9RestartAttempts}）`,
+          logLabel: `步骤 9 认证失败后准备回到步骤 6 重试（${step9RestartAttempts}/${maxStep9RestartAttempts}）`,
         });
         step = 6;
         continue;
@@ -1817,10 +3325,14 @@ async function autoRunLoop(totalRuns, options = {}) {
   let attemptRuns = Math.max(0, resumeAttemptRunsProcessed);
   let forceFreshTabsNextRun = false;
   let continueCurrentOnFirstAttempt = initialMode === 'continue';
+  const initialState = await getState();
+  const initialPhase = continueCurrentOnFirstAttempt && getRunningSteps(initialState.stepStatuses).length
+    ? 'waiting_step'
+    : 'running';
 
   await setState({
     autoRunSkipFailures,
-    ...getAutoRunStatusPayload('running', {
+    ...getAutoRunStatusPayload(initialPhase, {
       currentRun: resumeCurrentRun,
       totalRuns,
       attemptRun: resumeAttemptRunsProcessed,
@@ -1836,7 +3348,14 @@ async function autoRunLoop(totalRuns, options = {}) {
     let useExistingProgress = false;
 
     if (continueCurrentOnFirstAttempt) {
-      const currentState = await getState();
+      let currentState = await getState();
+      if (getRunningSteps(currentState.stepStatuses).length) {
+        currentState = await waitForRunningStepsToFinish({
+          currentRun: targetRun,
+          totalRuns,
+          attemptRun: attemptRuns,
+        });
+      }
       const resumeStep = getFirstUnfinishedStep(currentState.stepStatuses);
       if (resumeStep && hasSavedProgress(currentState.stepStatuses)) {
         startStep = resumeStep;
@@ -1855,9 +3374,14 @@ async function autoRunLoop(totalRuns, options = {}) {
         vpsPassword: prevState.vpsPassword,
         customPassword: prevState.customPassword,
         autoRunSkipFailures: prevState.autoRunSkipFailures,
+        autoRunDelayEnabled: prevState.autoRunDelayEnabled,
+        autoRunDelayMinutes: prevState.autoRunDelayMinutes,
         mailProvider: prevState.mailProvider,
+        emailGenerator: prevState.emailGenerator,
         inbucketHost: prevState.inbucketHost,
         inbucketMailbox: prevState.inbucketMailbox,
+        cloudflareDomain: prevState.cloudflareDomain,
+        cloudflareDomains: prevState.cloudflareDomains,
         ...getAutoRunStatusPayload('running', { currentRun: targetRun, totalRuns, attemptRun: attemptRuns }),
         ...(forceFreshTabsNextRun ? { tabRegistry: {} } : {}),
       };
@@ -2034,16 +3558,23 @@ async function resumeAutoRun() {
 }
 
 // ============================================================
-// Step 1: Get OAuth Link (via vps-panel.js)
+// Step 1: Get OAuth Link
 // ============================================================
 
 async function executeStep1(state) {
+  if (getPanelMode(state) === 'sub2api') {
+    return executeSub2ApiStep1(state);
+  }
+  return executeCpaStep1(state);
+}
+
+async function executeCpaStep1(state) {
   if (!state.vpsUrl) {
     throw new Error('尚未配置 CPA 地址，请先在侧边栏填写。');
   }
   await addLog('步骤 1：正在打开 CPA 面板...');
 
-  const injectFiles = ['content/utils.js', 'content/vps-panel.js'];
+  const injectFiles = ['content/activation-utils.js', 'content/utils.js', 'content/vps-panel.js'];
 
   await closeConflictingTabsForSource('vps-panel', state.vpsUrl);
 
@@ -2083,6 +3614,63 @@ async function executeStep1(state) {
   }
 }
 
+async function executeSub2ApiStep1(state) {
+  const sub2apiUrl = normalizeSub2ApiUrl(state.sub2apiUrl);
+  const groupName = (state.sub2apiGroupName || DEFAULT_SUB2API_GROUP_NAME).trim() || DEFAULT_SUB2API_GROUP_NAME;
+
+  if (!state.sub2apiEmail) {
+    throw new Error('尚未配置 SUB2API 登录邮箱，请先在侧边栏填写。');
+  }
+  if (!state.sub2apiPassword) {
+    throw new Error('尚未配置 SUB2API 登录密码，请先在侧边栏填写。');
+  }
+
+  await addLog('步骤 1：正在打开 SUB2API 后台...');
+
+  const injectFiles = ['content/utils.js', 'content/sub2api-panel.js'];
+
+  await closeConflictingTabsForSource('sub2api-panel', sub2apiUrl);
+
+  const tab = await chrome.tabs.create({ url: sub2apiUrl, active: true });
+  const tabId = tab.id;
+  await rememberSourceLastUrl('sub2api-panel', sub2apiUrl);
+
+  await addLog('步骤 1：SUB2API 页面已打开，正在等待页面进入目标地址...');
+  const matchedTab = await waitForTabUrlFamily('sub2api-panel', tabId, sub2apiUrl, {
+    timeoutMs: 15000,
+    retryDelayMs: 400,
+  });
+  if (!matchedTab) {
+    await addLog('步骤 1：SUB2API 页面尚未稳定，继续尝试连接内容脚本...', 'warn');
+  }
+
+  await ensureContentScriptReadyOnTab('sub2api-panel', tabId, {
+    inject: injectFiles,
+    injectSource: 'sub2api-panel',
+    timeoutMs: 45000,
+    retryDelayMs: 900,
+    logMessage: '步骤 1：SUB2API 页面仍在加载，正在重试连接内容脚本...',
+  });
+
+  const result = await sendToContentScript('sub2api-panel', {
+    type: 'EXECUTE_STEP',
+    step: 1,
+    source: 'background',
+    payload: {
+      sub2apiUrl,
+      sub2apiEmail: state.sub2apiEmail,
+      sub2apiPassword: state.sub2apiPassword,
+      sub2apiGroupName: groupName,
+    },
+  }, {
+    responseTimeoutMs: SUB2API_STEP1_RESPONSE_TIMEOUT_MS,
+  });
+
+  if (result?.error) {
+    throw new Error(result.error);
+  }
+}
+
 // ============================================================
 // Step 2: Open Signup Page (Background opens tab, signup-page.js clicks Register)
 // ============================================================
@@ -2107,26 +3695,39 @@ async function executeStep2(state) {
 // ============================================================
 
 async function executeStep3(state) {
-  if (!state.email) {
+  let resolvedEmail = state.email;
+  if (isHotmailProvider(state)) {
+    const account = await ensureHotmailAccountForFlow({
+      allowAllocate: true,
+      markUsed: true,
+      preferredAccountId: state.currentHotmailAccountId || null,
+    });
+    resolvedEmail = account.email;
+  }
+
+  if (!resolvedEmail) {
     throw new Error('缺少邮箱地址，请先在侧边栏粘贴邮箱。');
   }
 
   const password = state.customPassword || generatePassword();
+  if (resolvedEmail !== state.email) {
+    await setEmailState(resolvedEmail);
+  }
   await setPasswordState(password);
 
   // Save account record
   const accounts = state.accounts || [];
-  accounts.push({ email: state.email, password, createdAt: new Date().toISOString() });
+  accounts.push({ email: resolvedEmail, password, createdAt: new Date().toISOString() });
   await setState({ accounts });
 
   await addLog(
-    `步骤 3：正在填写邮箱 ${state.email}，密码为${state.customPassword ? '自定义' : '自动生成'}（${password.length} 位）`
+    `步骤 3：正在填写邮箱 ${resolvedEmail}，密码为${state.customPassword ? '自定义' : '自动生成'}（${password.length} 位）`
   );
   await sendToContentScript('signup-page', {
     type: 'EXECUTE_STEP',
     step: 3,
     source: 'background',
-    payload: { email: state.email, password },
+    payload: { email: resolvedEmail, password },
   });
 }
 
@@ -2136,6 +3737,9 @@ async function executeStep3(state) {
 
 function getMailConfig(state) {
   const provider = state.mailProvider || 'qq';
+  if (provider === HOTMAIL_PROVIDER) {
+    return { provider: HOTMAIL_PROVIDER, label: 'Hotmail（微软 Graph）' };
+  }
   if (provider === '163') {
     return { source: 'mail-163', url: 'https://mail.163.com/js6/main.jsp?df=mail163_letter#module=mbox.ListModule%7C%7B%22fid%22%3A1%2C%22order%22%3A%22date%22%2C%22desc%22%3Atrue%7D', label: '163 邮箱' };
   }
@@ -2156,7 +3760,7 @@ function getMailConfig(state) {
       url: `${host}/m/${encodeURIComponent(mailbox)}/`,
       label: `Inbucket 邮箱（${mailbox}）`,
       navigateOnReuse: true,
-      inject: ['content/utils.js', 'content/inbucket-mail.js'],
+      inject: ['content/activation-utils.js', 'content/utils.js', 'content/inbucket-mail.js'],
       injectSource: 'inbucket-mail',
     };
   }
@@ -2188,7 +3792,7 @@ function getVerificationCodeLabel(step) {
 function getVerificationPollPayload(step, state, overrides = {}) {
   if (step === 4) {
     return {
-      filterAfterTimestamp: state.flowStartTime || 0,
+      filterAfterTimestamp: getHotmailVerificationRequestTimestamp(4, state),
       senderFilters: ['openai', 'noreply', 'verify', 'auth', 'duckduckgo', 'forward'],
       subjectFilters: ['verify', 'verification', 'code', '楠岃瘉', 'confirm'],
       targetEmail: state.email,
@@ -2199,7 +3803,7 @@ function getVerificationPollPayload(step, state, overrides = {}) {
   }
 
   return {
-    filterAfterTimestamp: state.lastEmailTimestamp || state.flowStartTime || 0,
+    filterAfterTimestamp: getHotmailVerificationRequestTimestamp(7, state),
     senderFilters: ['openai', 'noreply', 'verify', 'auth', 'chatgpt', 'duckduckgo', 'forward'],
     subjectFilters: ['verify', 'verification', 'code', '楠岃瘉', 'confirm', 'login'],
     targetEmail: state.email,
@@ -2210,13 +3814,17 @@ function getVerificationPollPayload(step, state, overrides = {}) {
 }
 
 async function requestVerificationCodeResend(step) {
+  throwIfStopped();
   const signupTabId = await getTabId('signup-page');
   if (!signupTabId) {
     throw new Error('认证页面标签页已关闭，无法重新请求验证码。');
   }
 
+  throwIfStopped();
   await chrome.tabs.update(signupTabId, { active: true });
+  throwIfStopped();
   await addLog(`步骤 ${step}：正在请求新的${getVerificationCodeLabel(step)}验证码...`, 'warn');
+  throwIfStopped();
 
   const result = await sendToContentScript('signup-page', {
     type: 'RESEND_VERIFICATION_CODE',
@@ -2224,6 +3832,13 @@ async function requestVerificationCodeResend(step) {
     source: 'background',
     payload: {},
   });
+
+  if (step === 7) {
+    const restartError = getStep7RestartFromStep6Error(result);
+    if (restartError) {
+      throw restartError;
+    }
+  }
 
   if (result && result.error) {
     throw new Error(result.error);
@@ -2233,6 +3848,15 @@ async function requestVerificationCodeResend(step) {
 }
 
 async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) {
+  if (mail.provider === HOTMAIL_PROVIDER) {
+    const hotmailPollConfig = getHotmailVerificationPollConfig(step);
+    return pollHotmailVerificationCode(step, state, {
+      ...getVerificationPollPayload(step, state),
+      ...hotmailPollConfig,
+      ...pollOverrides,
+    });
+  }
+
   const stateKey = getVerificationCodeStateKey(step);
   const rejectedCodes = new Set();
   if (state[stateKey]) {
@@ -2247,6 +3871,7 @@ async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) 
   const maxRounds = pollOverrides.maxRounds || VERIFICATION_POLL_MAX_ROUNDS;
 
   for (let round = 1; round <= maxRounds; round++) {
+    throwIfStopped();
     if (round > 1) {
       await requestVerificationCodeResend(step);
     }
@@ -2286,6 +3911,9 @@ async function pollFreshVerificationCode(step, state, mail, pollOverrides = {}) 
 
       return result;
     } catch (err) {
+      if (isStopError(err)) {
+        throw err;
+      }
       lastError = err;
       await addLog(`步骤 ${step}：${err.message}`, 'warn');
       if (round < maxRounds) {
@@ -2311,6 +3939,13 @@ async function submitVerificationCode(step, code) {
     payload: { code },
   });
 
+  if (step === 7) {
+    const restartError = getStep7RestartFromStep6Error(result);
+    if (restartError) {
+      throw restartError;
+    }
+  }
+
   if (result && result.error) {
     throw new Error(result.error);
   }
@@ -2321,12 +3956,18 @@ async function submitVerificationCode(step, code) {
 async function resolveVerificationStep(step, state, mail, options = {}) {
   const stateKey = getVerificationCodeStateKey(step);
   const rejectedCodes = new Set();
-  if (state[stateKey]) {
+  const hotmailPollConfig = mail.provider === HOTMAIL_PROVIDER
+    ? getHotmailVerificationPollConfig(step)
+    : null;
+  const ignorePersistedLastCode = Boolean(hotmailPollConfig?.ignorePersistedLastCode);
+  if (state[stateKey] && !ignorePersistedLastCode) {
     rejectedCodes.add(state[stateKey]);
   }
 
   const nextFilterAfterTimestamp = options.filterAfterTimestamp ?? null;
-  const requestFreshCodeFirst = Boolean(options.requestFreshCodeFirst);
+  const requestFreshCodeFirst = options.requestFreshCodeFirst !== undefined
+    ? Boolean(options.requestFreshCodeFirst)
+    : (hotmailPollConfig?.requestFreshCodeFirst ?? false);
   const maxSubmitAttempts = 3;
 
   if (requestFreshCodeFirst) {
@@ -2334,7 +3975,18 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
       await requestVerificationCodeResend(step);
       await addLog(`步骤 ${step}：已先请求一封新的${getVerificationCodeLabel(step)}验证码，再开始轮询邮箱。`, 'warn');
     } catch (err) {
+      if (isStopError(err) || (step === 7 && isStep7RestartFromStep6Error(err))) {
+        throw err;
+      }
       await addLog(`步骤 ${step}：首次重新获取验证码失败：${err.message}，将继续使用当前时间窗口轮询。`, 'warn');
+    }
+  }
+
+  if (mail.provider === HOTMAIL_PROVIDER) {
+    const initialDelayMs = Number(options.initialDelayMs ?? hotmailPollConfig.initialDelayMs) || 0;
+    if (initialDelayMs > 0) {
+      await addLog(`步骤 ${step}：等待 ${Math.round(initialDelayMs / 1000)} 秒，让 Hotmail 验证码邮件先到达...`, 'info');
+      await sleepWithStop(initialDelayMs);
     }
   }
 
@@ -2344,7 +3996,9 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
       filterAfterTimestamp: nextFilterAfterTimestamp ?? undefined,
     });
 
+    throwIfStopped();
     await addLog(`步骤 ${step}：已获取${getVerificationCodeLabel(step)}验证码：${result.code}`);
+    throwIfStopped();
     const submitResult = await submitVerificationCode(step, result.code);
 
     if (submitResult.invalidCode) {
@@ -2383,6 +4037,7 @@ async function executeStep4(state) {
   }
 
   await chrome.tabs.update(signupTabId, { active: true });
+  throwIfStopped();
   await addLog('步骤 4：正在确认注册验证码页面是否就绪，必要时自动恢复密码页超时报错...');
   const prepareResult = await sendToContentScriptResilient(
     'signup-page',
@@ -2402,35 +4057,43 @@ async function executeStep4(state) {
   if (prepareResult && prepareResult.error) {
     throw new Error(prepareResult.error);
   }
+  if (prepareResult?.verificationRequestedAt) {
+    await setState({ loginVerificationRequestedAt: prepareResult.verificationRequestedAt });
+  }
   if (prepareResult?.alreadyVerified) {
     await completeStepFromBackground(4, {});
     return;
   }
 
-  await addLog(`步骤 4：正在打开${mail.label}...`);
+  throwIfStopped();
+  if (mail.provider === HOTMAIL_PROVIDER) {
+    await addLog(`步骤 4：正在通过 ${mail.label} 轮询验证码...`);
+  } else {
+    await addLog(`步骤 4：正在打开${mail.label}...`);
 
-  // For mail tabs, only create if not alive — don't navigate (preserves login session)
-  const alive = await isTabAlive(mail.source);
-  if (alive) {
-    if (mail.navigateOnReuse) {
+    // For mail tabs, only create if not alive — don't navigate (preserves login session)
+    const alive = await isTabAlive(mail.source);
+    if (alive) {
+      if (mail.navigateOnReuse) {
+        await reuseOrCreateTab(mail.source, mail.url, {
+          inject: mail.inject,
+          injectSource: mail.injectSource,
+        });
+      } else {
+        const tabId = await getTabId(mail.source);
+        await chrome.tabs.update(tabId, { active: true });
+      }
+    } else {
       await reuseOrCreateTab(mail.source, mail.url, {
         inject: mail.inject,
         injectSource: mail.injectSource,
       });
-    } else {
-      const tabId = await getTabId(mail.source);
-      await chrome.tabs.update(tabId, { active: true });
     }
-  } else {
-    await reuseOrCreateTab(mail.source, mail.url, {
-      inject: mail.inject,
-      injectSource: mail.injectSource,
-    });
   }
 
   await resolveVerificationStep(4, state, mail, {
-    filterAfterTimestamp: stepStartedAt,
-    requestFreshCodeFirst: true,
+    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
+    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
   });
   return;
 }
@@ -2458,11 +4121,7 @@ async function executeStep5(state) {
 // ============================================================
 
 async function refreshOAuthUrlBeforeStep6(state) {
-  if (!state.vpsUrl) {
-    throw new Error('尚未配置 CPA 地址，请先在侧边栏填写。');
-  }
-
-  await addLog('步骤 6：正在刷新登录用的 CPA OAuth 链接...');
+  await addLog(`步骤 6：正在刷新登录用的 ${getPanelModeLabel(state)} OAuth 链接...`);
   console.log(LOG_PREFIX, '[refreshOAuthUrlBeforeStep6] preparing fresh OAuth via step 1');
   const waitForFreshOAuth = waitForStepComplete(1, 120000);
   console.log(LOG_PREFIX, '[refreshOAuthUrlBeforeStep6] executing step 1 for fresh OAuth');
@@ -2518,6 +4177,7 @@ async function runStep7Attempt(state) {
     await reuseOrCreateTab('signup-page', state.oauthUrl);
   }
 
+  throwIfStopped();
   await addLog('步骤 7：正在准备认证页，必要时切换到一次性验证码登录...');
   const prepareResult = await sendToContentScript('signup-page', {
     type: 'PREPARE_LOGIN_CODE',
@@ -2526,33 +4186,43 @@ async function runStep7Attempt(state) {
     payload: {},
   });
 
+  const restartError = getStep7RestartFromStep6Error(prepareResult);
+  if (restartError) {
+    throw restartError;
+  }
+
   if (prepareResult && prepareResult.error) {
     throw new Error(prepareResult.error);
   }
 
-  await addLog(`步骤 7：正在打开${mail.label}...`);
+  throwIfStopped();
+  if (mail.provider === HOTMAIL_PROVIDER) {
+    await addLog(`步骤 7：正在通过 ${mail.label} 轮询验证码...`);
+  } else {
+    await addLog(`步骤 7：正在打开${mail.label}...`);
 
-  const alive = await isTabAlive(mail.source);
-  if (alive) {
-    if (mail.navigateOnReuse) {
+    const alive = await isTabAlive(mail.source);
+    if (alive) {
+      if (mail.navigateOnReuse) {
+        await reuseOrCreateTab(mail.source, mail.url, {
+          inject: mail.inject,
+          injectSource: mail.injectSource,
+        });
+      } else {
+        const tabId = await getTabId(mail.source);
+        await chrome.tabs.update(tabId, { active: true });
+      }
+    } else {
       await reuseOrCreateTab(mail.source, mail.url, {
         inject: mail.inject,
         injectSource: mail.injectSource,
       });
-    } else {
-      const tabId = await getTabId(mail.source);
-      await chrome.tabs.update(tabId, { active: true });
     }
-  } else {
-    await reuseOrCreateTab(mail.source, mail.url, {
-      inject: mail.inject,
-      injectSource: mail.injectSource,
-    });
   }
 
   await resolveVerificationStep(7, state, mail, {
-    filterAfterTimestamp: stepStartedAt,
-    requestFreshCodeFirst: true,
+    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
+    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
   });
 }
 
@@ -2580,7 +4250,7 @@ async function executeStep7(state) {
     } catch (err) {
       lastError = err;
 
-      if (!isVerificationMailPollingError(err)) {
+      if (!isStep7RecoverableError(err)) {
         throw err;
       }
 
@@ -2588,9 +4258,18 @@ async function executeStep7(state) {
         break;
       }
 
-      await addLog(`步骤 7：检测到邮箱轮询类失败，准备从步骤 6 重新开始（${round + 1}/${STEP7_RESTART_MAX_ROUNDS}）...`, 'warn');
+      await addLog(
+        isStep7RestartFromStep6Error(err)
+          ? `步骤 7：检测到登录页超时报错，准备从步骤 6 重新开始（${round + 1}/${STEP7_RESTART_MAX_ROUNDS}）...`
+          : `步骤 7：检测到邮箱轮询类失败，准备从步骤 6 重新开始（${round + 1}/${STEP7_RESTART_MAX_ROUNDS}）...`,
+        'warn'
+      );
       await rerunStep6ForStep7Recovery();
     }
+  }
+
+  if (lastError && isStep7RecoverableError(lastError)) {
+    throw new Error(`步骤 7：登录验证码流程在 ${STEP7_RESTART_MAX_ROUNDS} 轮恢复后仍未成功。最后一次原因：${lastError.message}`);
   }
 
   throw lastError || new Error(`步骤 7：登录验证码流程在 ${STEP7_RESTART_MAX_ROUNDS} 轮后仍未成功。`);
@@ -2604,9 +4283,11 @@ let webNavListener = null;
 let webNavCommittedListener = null;
 let step8TabUpdatedListener = null;
 let step8PendingReject = null;
-const STEP8_CLICK_EFFECT_TIMEOUT_MS = 3500;
+const STEP8_CLICK_EFFECT_TIMEOUT_MS = 10000;
 const STEP8_CLICK_RETRY_DELAY_MS = 500;
 const STEP8_READY_WAIT_TIMEOUT_MS = 30000;
+const STEP8_MAX_ROUNDS = 5;
+const STEP8_SIGNUP_PAGE_INJECT_FILES = ['content/utils.js', 'content/signup-page.js'];
 const STEP8_STRATEGIES = [
   { mode: 'content', strategy: 'requestSubmit', label: 'form.requestSubmit' },
   { mode: 'debugger', label: 'debugger click' },
@@ -2643,6 +4324,16 @@ function throwIfStep8SettledOrStopped(isSettled = false) {
   }
 }
 
+async function ensureStep8SignupPageReady(tabId, options = {}) {
+  await ensureContentScriptReadyOnTab('signup-page', tabId, {
+    inject: STEP8_SIGNUP_PAGE_INJECT_FILES,
+    injectSource: 'signup-page',
+    timeoutMs: options.timeoutMs ?? 15000,
+    retryDelayMs: options.retryDelayMs ?? 600,
+    logMessage: options.logMessage || '',
+  });
+}
+
 async function getStep8PageState(tabId, responseTimeoutMs = 1500) {
   try {
     const result = await sendTabMessageWithTimeout(tabId, 'signup-page', {
@@ -2664,6 +4355,7 @@ async function getStep8PageState(tabId, responseTimeoutMs = 1500) {
 
 async function waitForStep8Ready(tabId, timeoutMs = STEP8_READY_WAIT_TIMEOUT_MS) {
   const start = Date.now();
+  let recovered = false;
 
   while (Date.now() - start < timeoutMs) {
     throwIfStopped();
@@ -2674,13 +4366,26 @@ async function waitForStep8Ready(tabId, timeoutMs = STEP8_READY_WAIT_TIMEOUT_MS)
     if (pageState?.consentReady) {
       return pageState;
     }
+    if (pageState === null && !recovered) {
+      recovered = true;
+      await ensureStep8SignupPageReady(tabId, {
+        timeoutMs: Math.min(10000, timeoutMs),
+        logMessage: '步骤 8：认证页内容脚本已失联，正在等待页面重新就绪...',
+      });
+      continue;
+    }
+    recovered = false;
     await sleepWithStop(250);
   }
 
   throw new Error('步骤 8：长时间未进入 OAuth 同意页，无法定位“继续”按钮。');
 }
 
-async function prepareStep8DebuggerClick() {
+async function prepareStep8DebuggerClick(tabId) {
+  await ensureStep8SignupPageReady(tabId, {
+    timeoutMs: 15000,
+    logMessage: '步骤 8：认证页内容脚本已失联，正在恢复后继续定位按钮...',
+  });
   const result = await sendToContentScriptResilient('signup-page', {
     type: 'STEP8_FIND_AND_CLICK',
     source: 'background',
@@ -2698,7 +4403,11 @@ async function prepareStep8DebuggerClick() {
   return result;
 }
 
-async function triggerStep8ContentStrategy(strategy) {
+async function triggerStep8ContentStrategy(tabId, strategy) {
+  await ensureStep8SignupPageReady(tabId, {
+    timeoutMs: 15000,
+    logMessage: '步骤 8：认证页内容脚本已失联，正在恢复后继续点击“继续”按钮...',
+  });
   const result = await sendToContentScriptResilient('signup-page', {
     type: 'STEP8_TRIGGER_CONTINUE',
     source: 'background',
@@ -2720,8 +4429,51 @@ async function triggerStep8ContentStrategy(strategy) {
   return result;
 }
 
+async function reloadStep8ConsentPage(tabId, timeoutMs = 30000) {
+  if (!Number.isInteger(tabId)) {
+    throw new Error('步骤 8：缺少有效的认证页标签页，无法刷新后重试。');
+  }
+
+  await chrome.tabs.update(tabId, { active: true }).catch(() => { });
+
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error('步骤 8：刷新认证页后等待页面完成加载超时。'));
+    }, timeoutMs);
+
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status !== 'complete') return;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.reload(tabId, { bypassCache: false }).catch((err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(err);
+    });
+  });
+
+  await ensureStep8SignupPageReady(tabId, {
+    timeoutMs: Math.min(15000, timeoutMs),
+    logMessage: '步骤 8：认证页刷新后内容脚本尚未就绪，正在等待页面恢复...',
+  });
+}
+
 async function waitForStep8ClickEffect(tabId, baselineUrl, timeoutMs = STEP8_CLICK_EFFECT_TIMEOUT_MS) {
   const start = Date.now();
+  let recovered = false;
 
   while (Date.now() - start < timeoutMs) {
     throwIfStopped();
@@ -2740,11 +4492,18 @@ async function waitForStep8ClickEffect(tabId, baselineUrl, timeoutMs = STEP8_CLI
       throw new Error('步骤 8：点击“继续”后页面跳到了手机号页面，当前流程无法继续自动授权。');
     }
     if (pageState === null) {
-      return { progressed: true, reason: 'page_reloading' };
+      if (!recovered) {
+        recovered = true;
+        await ensureStep8SignupPageReady(tabId, {
+          timeoutMs: Math.max(3000, Math.min(8000, timeoutMs)),
+          logMessage: '步骤 8：点击后认证页正在重载，正在等待内容脚本重新就绪...',
+        }).catch(() => null);
+        continue;
+      }
+      await sleepWithStop(200);
+      continue;
     }
-    if (pageState && !pageState.consentPage) {
-      return { progressed: true, reason: 'left_consent_page', url: pageState.url };
-    }
+    recovered = false;
 
     await sleepWithStop(200);
   }
@@ -2846,9 +4605,12 @@ async function executeStep8(state) {
         chrome.webNavigation.onBeforeNavigate.addListener(webNavListener);
         chrome.webNavigation.onCommitted.addListener(webNavCommittedListener);
         chrome.tabs.onUpdated.addListener(step8TabUpdatedListener);
+        await ensureStep8SignupPageReady(signupTabId, {
+          timeoutMs: 15000,
+          logMessage: '步骤 8：认证页内容脚本尚未就绪，正在等待页面恢复...',
+        });
 
-        let attempt = 0;
-        while (!resolved) {
+        for (let round = 1; round <= STEP8_MAX_ROUNDS && !resolved; round++) {
           throwIfStep8SettledOrStopped(resolved);
           const pageState = await waitForStep8Ready(signupTabId);
           if (!pageState?.consentReady) {
@@ -2856,18 +4618,16 @@ async function executeStep8(state) {
             continue;
           }
 
-          const strategy = STEP8_STRATEGIES[attempt % STEP8_STRATEGIES.length];
-          const round = attempt + 1;
-          attempt += 1;
+          const strategy = STEP8_STRATEGIES[Math.min(round - 1, STEP8_STRATEGIES.length - 1)];
 
-          await addLog(`步骤 8：第 ${round} 次尝试点击“继续”（${strategy.label}）...`);
+          await addLog(`步骤 8：第 ${round}/${STEP8_MAX_ROUNDS} 轮尝试点击“继续”（${strategy.label}）...`);
 
           if (strategy.mode === 'debugger') {
-            const clickTarget = await prepareStep8DebuggerClick();
+            const clickTarget = await prepareStep8DebuggerClick(signupTabId);
             throwIfStep8SettledOrStopped(resolved);
             await clickWithDebugger(signupTabId, clickTarget?.rect);
           } else {
-            await triggerStep8ContentStrategy(strategy.strategy);
+            await triggerStep8ContentStrategy(signupTabId, strategy.strategy);
           }
 
           if (resolved) {
@@ -2884,7 +4644,12 @@ async function executeStep8(state) {
             break;
           }
 
-          await addLog(`步骤 8：${strategy.label} 本次未触发页面离开同意页，准备继续重试。`, 'warn');
+          if (round >= STEP8_MAX_ROUNDS) {
+            throw new Error(`步骤 8：连续 ${STEP8_MAX_ROUNDS} 轮点击“继续”后页面仍无反应。`);
+          }
+
+          await addLog(`步骤 8：${strategy.label} 本轮点击后页面无反应，正在刷新认证页后重试（下一轮 ${round + 1}/${STEP8_MAX_ROUNDS}）...`, 'warn');
+          await reloadStep8ConsentPage(signupTabId);
           await sleepWithStop(STEP8_CLICK_RETRY_DELAY_MS);
         }
       } catch (err) {
@@ -2895,10 +4660,17 @@ async function executeStep8(state) {
 }
 
 // ============================================================
-// Step 9: CPA 回调验证（通过 vps-panel.js）
+// Step 9: 平台回调验证
 // ============================================================
 
 async function executeStep9(state) {
+  if (getPanelMode(state) === 'sub2api') {
+    return executeSub2ApiStep9(state);
+  }
+  return executeCpaStep9(state);
+}
+
+async function executeCpaStep9(state) {
   if (state.localhostUrl && !isLocalhostOAuthCallbackUrl(state.localhostUrl)) {
     throw new Error('步骤 8 捕获到的 localhost OAuth 回调地址无效，请重新执行步骤 8。');
   }
@@ -2910,7 +4682,7 @@ async function executeStep9(state) {
   }
 
   if (shouldBypassStep9ForLocalCpa(state)) {
-    await addLog('步骤 9：检测到本地 CPA，步骤 8 完成后已自动添加，无需重复提交回调地址。', 'info');
+    await addLog('步骤 9：检测到本地 CPA，且当前策略为“跳过第9步”，本轮不再重复提交回调地址。', 'info');
     await completeStepFromBackground(9, {
       localhostUrl: state.localhostUrl,
       verifiedStatus: 'local-auto',
@@ -2920,7 +4692,7 @@ async function executeStep9(state) {
 
   await addLog('步骤 9：正在打开 CPA 面板...');
 
-  const injectFiles = ['content/utils.js', 'content/vps-panel.js'];
+  const injectFiles = ['content/activation-utils.js', 'content/utils.js', 'content/vps-panel.js'];
   let tabId = await getTabId('vps-panel');
   const alive = tabId && await isTabAlive('vps-panel');
 
@@ -2937,6 +4709,9 @@ async function executeStep9(state) {
 
   await ensureContentScriptReadyOnTab('vps-panel', tabId, {
     inject: injectFiles,
+    timeoutMs: 45000,
+    retryDelayMs: 900,
+    logMessage: '姝ラ 9锛欳PA 闈㈡澘浠嶅湪鍔犺浇锛屾鍦ㄩ噸璇曡繛鎺ュ唴瀹硅剼鏈?..',
   });
 
   await addLog('步骤 9：正在填写回调地址...');
@@ -2956,8 +4731,100 @@ async function executeStep9(state) {
   }
 }
 
+async function executeSub2ApiStep9(state) {
+  if (state.localhostUrl && !isLocalhostOAuthCallbackUrl(state.localhostUrl)) {
+    throw new Error('步骤 8 捕获到的 localhost OAuth 回调地址无效，请重新执行步骤 8。');
+  }
+  if (!state.localhostUrl) {
+    throw new Error('缺少 localhost 回调地址，请先完成步骤 8。');
+  }
+  if (!state.sub2apiSessionId) {
+    throw new Error('缺少 SUB2API 会话信息，请重新执行步骤 1。');
+  }
+  if (!state.sub2apiEmail) {
+    throw new Error('尚未配置 SUB2API 登录邮箱，请先在侧边栏填写。');
+  }
+  if (!state.sub2apiPassword) {
+    throw new Error('尚未配置 SUB2API 登录密码，请先在侧边栏填写。');
+  }
+
+  const sub2apiUrl = normalizeSub2ApiUrl(state.sub2apiUrl);
+  const injectFiles = ['content/utils.js', 'content/sub2api-panel.js'];
+
+  await addLog('步骤 9：正在打开 SUB2API 后台...');
+
+  let tabId = await getTabId('sub2api-panel');
+  const alive = tabId && await isTabAlive('sub2api-panel');
+
+  if (!alive) {
+    tabId = await reuseOrCreateTab('sub2api-panel', sub2apiUrl, {
+      inject: injectFiles,
+      injectSource: 'sub2api-panel',
+      reloadIfSameUrl: true,
+    });
+  } else {
+    await closeConflictingTabsForSource('sub2api-panel', sub2apiUrl, { excludeTabIds: [tabId] });
+    await chrome.tabs.update(tabId, { active: true });
+    await rememberSourceLastUrl('sub2api-panel', sub2apiUrl);
+  }
+
+  await ensureContentScriptReadyOnTab('sub2api-panel', tabId, {
+    inject: injectFiles,
+    injectSource: 'sub2api-panel',
+  });
+
+  await addLog('步骤 9：正在向 SUB2API 提交回调并创建账号...');
+  const result = await sendToContentScript('sub2api-panel', {
+    type: 'EXECUTE_STEP',
+    step: 9,
+    source: 'background',
+    payload: {
+      localhostUrl: state.localhostUrl,
+      sub2apiUrl,
+      sub2apiEmail: state.sub2apiEmail,
+      sub2apiPassword: state.sub2apiPassword,
+      sub2apiGroupName: state.sub2apiGroupName,
+      sub2apiSessionId: state.sub2apiSessionId,
+      sub2apiOAuthState: state.sub2apiOAuthState,
+      sub2apiGroupId: state.sub2apiGroupId,
+      sub2apiDraftName: state.sub2apiDraftName,
+    },
+  }, {
+    responseTimeoutMs: SUB2API_STEP9_RESPONSE_TIMEOUT_MS,
+  });
+
+  if (result?.error) {
+    throw new Error(result.error);
+  }
+}
+
 // ============================================================
 // Open Side Panel on extension icon click
 // ============================================================
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== AUTO_RUN_ALARM_NAME) {
+    return;
+  }
+  launchScheduledAutoRun('alarm').catch((err) => {
+    console.error(LOG_PREFIX, 'Failed to launch scheduled auto run from alarm:', err);
+  });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  restoreScheduledAutoRunIfNeeded().catch((err) => {
+    console.error(LOG_PREFIX, 'Failed to restore scheduled auto run on startup:', err);
+  });
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  restoreScheduledAutoRunIfNeeded().catch((err) => {
+    console.error(LOG_PREFIX, 'Failed to restore scheduled auto run on install/update:', err);
+  });
+});
+
+restoreScheduledAutoRunIfNeeded().catch((err) => {
+  console.error(LOG_PREFIX, 'Failed to restore scheduled auto run:', err);
+});

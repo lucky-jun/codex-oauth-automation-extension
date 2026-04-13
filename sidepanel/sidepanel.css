@@ -142,6 +142,67 @@ header {
 [data-theme="dark"] .theme-toggle .icon-moon { display: none; }
 [data-theme="dark"] .theme-toggle .icon-sun { display: block; }
 
+.header-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.header-config-btn {
+  min-width: 0;
+  padding-inline: 10px;
+}
+
+.header-config-btn[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.header-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 120px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 1300;
+}
+
+.header-dropdown[hidden] {
+  display: none !important;
+}
+
+.header-dropdown-item {
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.header-dropdown-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.header-dropdown-item:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 /* ============================================================
    Buttons
    ============================================================ */
@@ -238,6 +299,47 @@ header {
   box-shadow: var(--shadow-sm);
 }
 
+.data-card.is-locked {
+  position: relative;
+  overflow: hidden;
+}
+
+.data-card.is-locked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg-base) 18%, transparent);
+  pointer-events: none;
+}
+
+.section-mini-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.section-mini-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.section-mini-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.section-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .data-row {
   display: flex;
   align-items: center;
@@ -254,6 +356,10 @@ header {
   gap: 8px;
   flex: 1;
   min-width: 0;
+}
+
+.data-value-actions {
+  justify-content: space-between;
 }
 
 .input-with-icon {
@@ -278,6 +384,10 @@ header {
   font-size: 13px;
   color: var(--text-muted);
   min-width: 0;
+}
+
+.data-value-fill {
+  flex: 1;
 }
 
 .data-value.has-value { color: var(--text-primary); }
@@ -309,6 +419,23 @@ header {
 .data-input::placeholder { color: var(--text-muted); }
 .data-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 
+.data-textarea {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  padding: 8px 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.data-textarea::placeholder { color: var(--text-muted); }
+.data-textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+
 .data-input-with-icon {
   padding-right: 38px;
 }
@@ -334,10 +461,228 @@ header {
   background: var(--bg-hover);
 }
 
+.choice-group {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.choice-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+
+.choice-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.choice-btn.is-active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--blue-soft);
+  box-shadow: 0 0 0 1px var(--blue-glow);
+}
+
 #btn-fetch-email,
 #btn-save-settings {
   padding-inline: 10px;
   flex-shrink: 0;
+}
+
+.hotmail-card {
+  margin-top: 10px;
+}
+
+.hotmail-actions-row .data-label {
+  visibility: hidden;
+}
+
+.hotmail-import-row {
+  align-items: flex-start;
+}
+
+.hotmail-import-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hotmail-list-shell {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-base) 82%, transparent);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px;
+  transition: max-height var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+
+.hotmail-list-shell.is-collapsed {
+  max-height: 236px;
+}
+
+.hotmail-list-shell.is-expanded {
+  max-height: 440px;
+}
+
+.hotmail-list-shell::-webkit-scrollbar {
+  width: 8px;
+}
+
+.hotmail-list-shell::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hotmail-list-shell::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.hotmail-list-shell::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.hotmail-accounts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.hotmail-account-item {
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hotmail-account-item.is-current {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px var(--blue-glow);
+}
+
+.hotmail-account-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hotmail-account-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hotmail-account-email {
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.hotmail-copy-btn {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), transform var(--transition);
+}
+
+.hotmail-copy-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.hotmail-copy-btn:active {
+  transform: scale(0.96);
+}
+
+.hotmail-status-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.hotmail-status-chip.status-authorized {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.hotmail-status-chip.status-used {
+  background: var(--orange-soft);
+  color: var(--orange);
+}
+
+.hotmail-status-chip.status-disabled {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+.hotmail-status-chip.status-pending {
+  background: var(--orange-soft);
+  color: var(--orange);
+}
+
+.hotmail-status-chip.status-error {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.hotmail-account-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.hotmail-account-error {
+  font-size: 12px;
+  color: var(--red);
+  word-break: break-word;
+}
+
+.hotmail-account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hotmail-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  text-align: center;
 }
 
 .data-select {
@@ -373,6 +718,35 @@ header {
   margin-top: 2px;
   accent-color: var(--blue);
   cursor: pointer;
+  flex-shrink: 0;
+}
+
+.auto-delay-inline {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.auto-delay-check {
+  flex: 0 1 auto;
+}
+
+.auto-delay-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.auto-delay-input {
+  width: 72px;
+  flex: 0 0 auto;
+  text-align: center;
+}
+
+.data-unit {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -422,6 +796,12 @@ header {
 }
 .status-bar.paused { color: var(--orange); }
 
+.status-bar.scheduled .status-dot {
+  background: var(--blue);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.status-bar.scheduled { color: var(--blue); }
+
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.85); }
@@ -440,6 +820,51 @@ header {
 }
 .auto-continue-bar svg { color: var(--orange); flex-shrink: 0; }
 .auto-hint { font-size: 13px; color: var(--orange); flex: 1; font-weight: 500; }
+
+.auto-schedule-bar {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--blue-soft);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.auto-schedule-bar svg {
+  color: var(--blue);
+  flex-shrink: 0;
+}
+
+.auto-schedule-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.auto-schedule-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--blue);
+}
+
+.auto-schedule-meta {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.auto-schedule-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
 
 /* ============================================================
    Steps Section
