@@ -11,6 +11,14 @@ const STATUS_ICONS = {
 };
 
 const logArea = document.getElementById('log-area');
+const updateSection = document.getElementById('update-section');
+const extensionUpdateStatus = document.getElementById('extension-update-status');
+const extensionVersionMeta = document.getElementById('extension-version-meta');
+const btnReleaseLog = document.getElementById('btn-release-log');
+const updateCardVersion = document.getElementById('update-card-version');
+const updateCardSummary = document.getElementById('update-card-summary');
+const updateReleaseList = document.getElementById('update-release-list');
+const btnOpenRelease = document.getElementById('btn-open-release');
 const settingsCard = document.getElementById('settings-card');
 const displayOauthUrl = document.getElementById('display-oauth-url');
 const displayLocalhostUrl = document.getElementById('display-localhost-url');
@@ -57,9 +65,16 @@ const inputSub2ApiPassword = document.getElementById('input-sub2api-password');
 const rowSub2ApiGroup = document.getElementById('row-sub2api-group');
 const inputSub2ApiGroup = document.getElementById('input-sub2api-group');
 const selectMailProvider = document.getElementById('select-mail-provider');
+const btnMailLogin = document.getElementById('btn-mail-login');
 const rowEmailGenerator = document.getElementById('row-email-generator');
 const selectEmailGenerator = document.getElementById('select-email-generator');
 const hotmailSection = document.getElementById('hotmail-section');
+const rowHotmailServiceMode = document.getElementById('row-hotmail-service-mode');
+const hotmailServiceModeButtons = Array.from(document.querySelectorAll('[data-hotmail-service-mode]'));
+const rowHotmailRemoteBaseUrl = document.getElementById('row-hotmail-remote-base-url');
+const inputHotmailRemoteBaseUrl = document.getElementById('input-hotmail-remote-base-url');
+const rowHotmailLocalBaseUrl = document.getElementById('row-hotmail-local-base-url');
+const inputHotmailLocalBaseUrl = document.getElementById('input-hotmail-local-base-url');
 const inputHotmailEmail = document.getElementById('input-hotmail-email');
 const inputHotmailClientId = document.getElementById('input-hotmail-client-id');
 const inputHotmailPassword = document.getElementById('input-hotmail-password');
@@ -67,11 +82,15 @@ const inputHotmailRefreshToken = document.getElementById('input-hotmail-refresh-
 const inputHotmailImport = document.getElementById('input-hotmail-import');
 const btnAddHotmailAccount = document.getElementById('btn-add-hotmail-account');
 const btnImportHotmailAccounts = document.getElementById('btn-import-hotmail-accounts');
+const btnHotmailUsageGuide = document.getElementById('btn-hotmail-usage-guide');
 const btnClearUsedHotmailAccounts = document.getElementById('btn-clear-used-hotmail-accounts');
 const btnDeleteAllHotmailAccounts = document.getElementById('btn-delete-all-hotmail-accounts');
 const btnToggleHotmailList = document.getElementById('btn-toggle-hotmail-list');
 const hotmailListShell = document.getElementById('hotmail-list-shell');
 const hotmailAccountsList = document.getElementById('hotmail-accounts-list');
+const rowEmailPrefix = document.getElementById('row-email-prefix');
+const labelEmailPrefix = document.getElementById('label-email-prefix');
+const inputEmailPrefix = document.getElementById('input-email-prefix');
 const rowInbucketHost = document.getElementById('row-inbucket-host');
 const inputInbucketHost = document.getElementById('input-inbucket-host');
 const rowInbucketMailbox = document.getElementById('row-inbucket-mailbox');
@@ -82,11 +101,16 @@ const inputCfDomain = document.getElementById('input-cf-domain');
 const btnCfDomainMode = document.getElementById('btn-cf-domain-mode');
 const inputRunCount = document.getElementById('input-run-count');
 const inputAutoSkipFailures = document.getElementById('input-auto-skip-failures');
+const inputAutoSkipFailuresThreadIntervalMinutes = document.getElementById('input-auto-skip-failures-thread-interval-minutes');
 const inputAutoDelayEnabled = document.getElementById('input-auto-delay-enabled');
 const inputAutoDelayMinutes = document.getElementById('input-auto-delay-minutes');
+const inputAutoStepDelaySeconds = document.getElementById('input-auto-step-delay-seconds');
 const autoStartModal = document.getElementById('auto-start-modal');
 const autoStartTitle = autoStartModal?.querySelector('.modal-title');
 const autoStartMessage = document.getElementById('auto-start-message');
+const modalOptionRow = document.getElementById('modal-option-row');
+const modalOptionInput = document.getElementById('modal-option-input');
+const modalOptionText = document.getElementById('modal-option-text');
 const btnAutoStartClose = document.getElementById('btn-auto-start-close');
 const btnAutoStartCancel = document.getElementById('btn-auto-start-cancel');
 const btnAutoStartRestart = document.getElementById('btn-auto-start-restart');
@@ -107,7 +131,18 @@ const SKIPPABLE_STEPS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 const AUTO_DELAY_MIN_MINUTES = 1;
 const AUTO_DELAY_MAX_MINUTES = 1440;
 const AUTO_DELAY_DEFAULT_MINUTES = 30;
+const AUTO_FALLBACK_THREAD_INTERVAL_MIN_MINUTES = 0;
+const AUTO_FALLBACK_THREAD_INTERVAL_MAX_MINUTES = 1440;
+const AUTO_FALLBACK_THREAD_INTERVAL_DEFAULT_MINUTES = 0;
+const AUTO_STEP_DELAY_MIN_SECONDS = 0;
+const AUTO_STEP_DELAY_MAX_SECONDS = 600;
 const DEFAULT_LOCAL_CPA_STEP9_MODE = 'submit';
+const AUTO_SKIP_FAILURES_PROMPT_DISMISSED_STORAGE_KEY = 'multipage-auto-skip-failures-prompt-dismissed';
+const AUTO_RUN_FALLBACK_RISK_PROMPT_DISMISSED_STORAGE_KEY = 'multipage-auto-run-fallback-risk-prompt-dismissed';
+const AUTO_RUN_FALLBACK_RISK_WARNING_MIN_RUNS = 15;
+const AUTO_RUN_FALLBACK_RISK_RECOMMENDED_THREAD_INTERVAL_MINUTES = 5;
+const HOTMAIL_SERVICE_MODE_REMOTE = 'remote';
+const HOTMAIL_SERVICE_MODE_LOCAL = 'local';
 
 let latestState = null;
 let currentAutoRun = {
@@ -124,11 +159,13 @@ let settingsAutoSaveTimer = null;
 let cloudflareDomainEditMode = false;
 let modalChoiceResolver = null;
 let currentModalActions = [];
+let modalResultBuilder = null;
 let scheduledCountdownTimer = null;
 let hotmailActionInFlight = false;
 let hotmailListExpanded = false;
 let configMenuOpen = false;
 let configActionInFlight = false;
+let currentReleaseSnapshot = null;
 
 const EYE_OPEN_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_CLOSED_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19C5 19 1 12 1 12a21.77 21.77 0 0 1 5.06-6.94"/><path d="M9.9 4.24A10.94 10.94 0 0 1 12 5c7 0 11 7 11 7a21.86 21.86 0 0 1-2.16 3.19"/><path d="M1 1l22 22"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></svg>';
@@ -140,6 +177,25 @@ const filterHotmailAccountsByUsage = window.HotmailUtils?.filterHotmailAccountsB
 const getHotmailBulkActionLabel = window.HotmailUtils?.getHotmailBulkActionLabel;
 const getHotmailListToggleLabel = window.HotmailUtils?.getHotmailListToggleLabel;
 const HOTMAIL_LIST_EXPANDED_STORAGE_KEY = 'multipage-hotmail-list-expanded';
+const sidepanelUpdateService = window.SidepanelUpdateService;
+const MAIL_PROVIDER_LOGIN_CONFIGS = {
+  '163': {
+    label: '163 邮箱',
+    url: 'https://mail.163.com/',
+  },
+  '163-vip': {
+    label: '163 VIP 邮箱',
+    url: 'https://vip.163.com/',
+  },
+  qq: {
+    label: 'QQ 邮箱',
+    url: 'https://wx.mail.qq.com/',
+  },
+  '2925': {
+    label: '2925 邮箱',
+    url: 'https://2925.com/#/mailList',
+  },
+};
 
 // ============================================================
 // Toast Notifications
@@ -161,6 +217,10 @@ const LOG_LEVEL_LABELS = {
   error: '错误',
 };
 
+function usesGeneratedAliasMailProvider(provider) {
+  return provider === '2925';
+}
+
 function showToast(message, type = 'error', duration = 4000) {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
@@ -178,6 +238,17 @@ function dismissToast(toast) {
   if (!toast.parentNode) return;
   toast.classList.add('toast-exit');
   toast.addEventListener('animationend', () => toast.remove());
+}
+
+function resetActionModalOption() {
+  if (!modalOptionRow || !modalOptionInput || !modalOptionText) {
+    return;
+  }
+
+  modalOptionRow.hidden = true;
+  modalOptionInput.checked = false;
+  modalOptionInput.disabled = false;
+  modalOptionText.textContent = '不再提示';
 }
 
 function resetActionModalButtons() {
@@ -206,18 +277,40 @@ function configureActionModalButton(button, action) {
   button.onclick = () => resolveModalChoice(action.id);
 }
 
+function configureActionModalOption(option) {
+  if (!modalOptionRow || !modalOptionInput || !modalOptionText) {
+    return;
+  }
+
+  if (!option) {
+    resetActionModalOption();
+    return;
+  }
+
+  modalOptionRow.hidden = false;
+  modalOptionInput.checked = Boolean(option.checked);
+  modalOptionInput.disabled = Boolean(option.disabled);
+  modalOptionText.textContent = option.label || '不再提示';
+}
+
 function resolveModalChoice(choice) {
+  const optionChecked = Boolean(modalOptionInput?.checked);
+  const result = typeof modalResultBuilder === 'function'
+    ? modalResultBuilder(choice, { optionChecked })
+    : choice;
   if (modalChoiceResolver) {
-    modalChoiceResolver(choice);
+    modalChoiceResolver(result);
     modalChoiceResolver = null;
   }
+  modalResultBuilder = null;
   resetActionModalButtons();
+  resetActionModalOption();
   if (autoStartModal) {
     autoStartModal.hidden = true;
   }
 }
 
-function openActionModal({ title, message, actions }) {
+function openActionModal({ title, message, actions, option, buildResult }) {
   if (!autoStartModal) {
     return Promise.resolve(null);
   }
@@ -226,12 +319,18 @@ function openActionModal({ title, message, actions }) {
     resolveModalChoice(null);
   }
 
+  resetActionModalButtons();
   autoStartTitle.textContent = title;
   autoStartMessage.textContent = message;
   currentModalActions = actions || [];
-  configureActionModalButton(btnAutoStartCancel, currentModalActions[0]);
-  configureActionModalButton(btnAutoStartRestart, currentModalActions[1]);
-  configureActionModalButton(btnAutoStartContinue, currentModalActions[2]);
+  modalResultBuilder = typeof buildResult === 'function' ? buildResult : null;
+  const buttonSlots = currentModalActions.length <= 2
+    ? [btnAutoStartCancel, btnAutoStartContinue]
+    : [btnAutoStartCancel, btnAutoStartRestart, btnAutoStartContinue];
+  buttonSlots.forEach((button, index) => {
+    configureActionModalButton(button, currentModalActions[index]);
+  });
+  configureActionModalOption(option);
   autoStartModal.hidden = false;
 
   return new Promise((resolve) => {
@@ -265,6 +364,101 @@ async function openConfirmModal({ title, message, confirmLabel = '确认', confi
     ],
   });
   return choice === 'confirm';
+}
+
+async function openConfirmModalWithOption({
+  title,
+  message,
+  confirmLabel = '确认',
+  confirmVariant = 'btn-primary',
+  optionLabel = '不再提示',
+  optionChecked = false,
+  optionDisabled = false,
+}) {
+  const result = await openActionModal({
+    title,
+    message,
+    actions: [
+      { id: null, label: '取消', variant: 'btn-ghost' },
+      { id: 'confirm', label: confirmLabel, variant: confirmVariant },
+    ],
+    option: {
+      label: optionLabel,
+      checked: optionChecked,
+      disabled: optionDisabled,
+    },
+    buildResult: (choice, meta) => ({
+      choice,
+      optionChecked: Boolean(meta?.optionChecked),
+    }),
+  });
+
+  return {
+    confirmed: result?.choice === 'confirm',
+    optionChecked: Boolean(result?.optionChecked),
+  };
+}
+
+function isPromptDismissed(storageKey) {
+  return localStorage.getItem(storageKey) === '1';
+}
+
+function setPromptDismissed(storageKey, dismissed) {
+  if (dismissed) {
+    localStorage.setItem(storageKey, '1');
+  } else {
+    localStorage.removeItem(storageKey);
+  }
+}
+
+function isAutoSkipFailuresPromptDismissed() {
+  return isPromptDismissed(AUTO_SKIP_FAILURES_PROMPT_DISMISSED_STORAGE_KEY);
+}
+
+function setAutoSkipFailuresPromptDismissed(dismissed) {
+  setPromptDismissed(AUTO_SKIP_FAILURES_PROMPT_DISMISSED_STORAGE_KEY, dismissed);
+}
+
+function isAutoRunFallbackRiskPromptDismissed() {
+  return isPromptDismissed(AUTO_RUN_FALLBACK_RISK_PROMPT_DISMISSED_STORAGE_KEY);
+}
+
+function setAutoRunFallbackRiskPromptDismissed(dismissed) {
+  setPromptDismissed(AUTO_RUN_FALLBACK_RISK_PROMPT_DISMISSED_STORAGE_KEY, dismissed);
+}
+
+async function openAutoSkipFailuresConfirmModal() {
+  const result = await openConfirmModalWithOption({
+    title: '兜底说明',
+    message: '开启后，当某一轮失败且无法继续时，会直接放弃当前线程，重新开新一轮，直到补足目标运行次数。线程间隔只在开启兜底且运行次数大于 1 时生效。',
+    confirmLabel: '确认开启',
+  });
+
+  return {
+    confirmed: result.confirmed,
+    dismissPrompt: result.optionChecked,
+  };
+}
+
+function shouldWarnAutoRunFallbackRisk(totalRuns, autoRunSkipFailures) {
+  return Boolean(autoRunSkipFailures) && totalRuns >= AUTO_RUN_FALLBACK_RISK_WARNING_MIN_RUNS;
+}
+
+async function openAutoRunFallbackRiskConfirmModal(totalRuns, fallbackThreadIntervalMinutes) {
+  const intervalLabel = Number.isFinite(fallbackThreadIntervalMinutes)
+    ? `${fallbackThreadIntervalMinutes} 分钟`
+    : '未设置';
+
+  const result = await openConfirmModalWithOption({
+    title: '自动运行风险提醒',
+    message: `当前设置为 ${totalRuns} 轮自动化，已开启兜底，线程间隔为 ${intervalLabel}。次数太多，可能会因为 IP 短时间注册过多原因而都失败。建议控制在 ${AUTO_RUN_FALLBACK_RISK_WARNING_MIN_RUNS} 轮以下，并将线程间隔设置在 ${AUTO_RUN_FALLBACK_RISK_RECOMMENDED_THREAD_INTERVAL_MINUTES} 分钟以上。是否继续？`,
+    confirmLabel: '继续',
+  });
+
+  return {
+    confirmed: result.confirmed,
+    dismissPrompt: result.optionChecked,
+  };
 }
 
 function updateConfigMenuControls() {
@@ -432,6 +626,54 @@ function normalizeAutoDelayMinutes(value) {
   return Math.min(AUTO_DELAY_MAX_MINUTES, Math.max(AUTO_DELAY_MIN_MINUTES, Math.floor(numeric)));
 }
 
+function normalizeAutoRunThreadIntervalMinutes(value) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return AUTO_FALLBACK_THREAD_INTERVAL_DEFAULT_MINUTES;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return AUTO_FALLBACK_THREAD_INTERVAL_DEFAULT_MINUTES;
+  }
+
+  return Math.min(
+    AUTO_FALLBACK_THREAD_INTERVAL_MAX_MINUTES,
+    Math.max(AUTO_FALLBACK_THREAD_INTERVAL_MIN_MINUTES, Math.floor(numeric))
+  );
+}
+
+function normalizeAutoStepDelaySeconds(value) {
+  const rawValue = String(value ?? '').trim();
+  if (!rawValue) {
+    return null;
+  }
+
+  const numeric = Number(rawValue);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return Math.min(AUTO_STEP_DELAY_MAX_SECONDS, Math.max(AUTO_STEP_DELAY_MIN_SECONDS, Math.floor(numeric)));
+}
+
+function formatAutoStepDelayInputValue(value) {
+  const normalized = normalizeAutoStepDelaySeconds(value);
+  return normalized === null ? '' : String(normalized);
+}
+
+function getRunCountValue() {
+  return Math.min(50, Math.max(1, parseInt(inputRunCount.value, 10) || 1));
+}
+
+function updateFallbackThreadIntervalInputState() {
+  if (!inputAutoSkipFailuresThreadIntervalMinutes) {
+    return;
+  }
+
+  inputAutoSkipFailuresThreadIntervalMinutes.disabled = !(inputAutoSkipFailures.checked && getRunCountValue() > 1);
+}
+
 function updateAutoDelayInputState() {
   const scheduled = isAutoRunScheduledPhase();
   inputAutoDelayEnabled.disabled = scheduled;
@@ -595,13 +837,19 @@ function collectSettingsPayload() {
     customPassword: inputPassword.value,
     mailProvider: selectMailProvider.value,
     emailGenerator: selectEmailGenerator.value,
+    emailPrefix: inputEmailPrefix.value.trim(),
     inbucketHost: inputInbucketHost.value.trim(),
     inbucketMailbox: inputInbucketMailbox.value.trim(),
+    hotmailServiceMode: getSelectedHotmailServiceMode(),
+    hotmailRemoteBaseUrl: inputHotmailRemoteBaseUrl.value.trim(),
+    hotmailLocalBaseUrl: inputHotmailLocalBaseUrl.value.trim(),
     cloudflareDomain: selectedCloudflareDomain,
     cloudflareDomains: domains,
-    autoRunSkipFailures: inputAutoSkipFailures.checked,
+    autoRunSkipFailures: true,
+    autoRunFallbackThreadIntervalMinutes: normalizeAutoRunThreadIntervalMinutes(inputAutoSkipFailuresThreadIntervalMinutes.value),
     autoRunDelayEnabled: inputAutoDelayEnabled.checked,
     autoRunDelayMinutes: normalizeAutoDelayMinutes(inputAutoDelayMinutes.value),
+    autoStepDelaySeconds: normalizeAutoStepDelaySeconds(inputAutoStepDelaySeconds.value),
   };
 }
 
@@ -609,6 +857,10 @@ function normalizeLocalCpaStep9Mode(value = '') {
   return String(value || '').trim().toLowerCase() === 'bypass'
     ? 'bypass'
     : DEFAULT_LOCAL_CPA_STEP9_MODE;
+}
+
+function normalizeHotmailServiceMode(value = '') {
+  return HOTMAIL_SERVICE_MODE_LOCAL;
 }
 
 function getSelectedLocalCpaStep9Mode() {
@@ -620,6 +872,23 @@ function setLocalCpaStep9Mode(mode) {
   const resolvedMode = normalizeLocalCpaStep9Mode(mode);
   localCpaStep9ModeButtons.forEach((button) => {
     const active = button.dataset.localCpaStep9Mode === resolvedMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function getSelectedHotmailServiceMode() {
+  const activeButton = hotmailServiceModeButtons.find((button) => button.classList.contains('is-active'));
+  return normalizeHotmailServiceMode(activeButton?.dataset.hotmailServiceMode);
+}
+
+function setHotmailServiceMode(mode) {
+  const resolvedMode = normalizeHotmailServiceMode(mode);
+  hotmailServiceModeButtons.forEach((button) => {
+    const isRemoteMode = button.dataset.hotmailServiceMode === HOTMAIL_SERVICE_MODE_REMOTE;
+    const active = button.dataset.hotmailServiceMode === resolvedMode;
+    button.disabled = isRemoteMode;
+    button.setAttribute('aria-disabled', String(isRemoteMode));
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-pressed', String(active));
   });
@@ -708,11 +977,15 @@ async function saveSettings(options = {}) {
       throw new Error(response.error);
     }
 
-    syncLatestState(payload);
-    markSettingsDirty(false);
-    updatePanelModeUI();
-    updateMailProviderUI();
-    updateButtonStates();
+    if (response?.state) {
+      applySettingsState(response.state);
+    } else {
+      syncLatestState(payload);
+      markSettingsDirty(false);
+      updatePanelModeUI();
+      updateMailProviderUI();
+      updateButtonStates();
+    }
     if (!silent) {
       showToast('配置已保存', 'success', 1800);
     }
@@ -740,9 +1013,11 @@ function applyAutoRunStatus(payload = currentAutoRun) {
 
   inputRunCount.disabled = currentAutoRun.autoRunning;
   btnAutoRun.disabled = currentAutoRun.autoRunning;
-  btnFetchEmail.disabled = locked;
+  btnFetchEmail.disabled = locked
+    || usesGeneratedAliasMailProvider(selectMailProvider.value)
+    || isCustomEmailGeneratorSelected();
   inputEmail.disabled = locked;
-  inputAutoSkipFailures.disabled = scheduled;
+  inputAutoSkipFailures.disabled = true;
 
   if (currentAutoRun.totalRuns > 0) {
     inputRunCount.value = String(currentAutoRun.totalRuns);
@@ -774,12 +1049,14 @@ function applyAutoRunStatus(payload = currentAutoRun) {
       setDefaultAutoRunButton();
       inputEmail.disabled = false;
       if (!locked) {
-        btnFetchEmail.disabled = false;
+        btnFetchEmail.disabled = usesGeneratedAliasMailProvider(selectMailProvider.value)
+          || isCustomEmailGeneratorSelected();
       }
       break;
   }
 
   updateAutoDelayInputState();
+  updateFallbackThreadIntervalInputState();
   syncScheduledCountdownTicker();
   updateStopButtonState(scheduled || paused || locked || Object.values(getStepStatuses()).some(status => status === 'running'));
   updateConfigMenuControls();
@@ -836,13 +1113,19 @@ function applySettingsState(state) {
   inputSub2ApiGroup.value = state?.sub2apiGroupName || '';
   selectMailProvider.value = state?.mailProvider || '163';
   selectEmailGenerator.value = state?.emailGenerator || 'duck';
+  inputEmailPrefix.value = state?.emailPrefix || '';
   inputInbucketHost.value = state?.inbucketHost || '';
   inputInbucketMailbox.value = state?.inbucketMailbox || '';
+  setHotmailServiceMode(state?.hotmailServiceMode);
+  inputHotmailRemoteBaseUrl.value = state?.hotmailRemoteBaseUrl || '';
+  inputHotmailLocalBaseUrl.value = state?.hotmailLocalBaseUrl || '';
   renderCloudflareDomainOptions(state?.cloudflareDomain || '');
   setCloudflareDomainEditMode(false, { clearInput: true });
-  inputAutoSkipFailures.checked = Boolean(state?.autoRunSkipFailures);
+  inputAutoSkipFailures.checked = true;
+  inputAutoSkipFailuresThreadIntervalMinutes.value = String(normalizeAutoRunThreadIntervalMinutes(state?.autoRunFallbackThreadIntervalMinutes));
   inputAutoDelayEnabled.checked = Boolean(state?.autoRunDelayEnabled);
   inputAutoDelayMinutes.value = String(normalizeAutoDelayMinutes(state?.autoRunDelayMinutes));
+  inputAutoStepDelaySeconds.value = formatAutoStepDelayInputValue(state?.autoStepDelaySeconds);
   if (state?.autoRunTotalRuns) {
     inputRunCount.value = String(state.autoRunTotalRuns);
   }
@@ -850,6 +1133,7 @@ function applySettingsState(state) {
   applyAutoRunStatus(state);
   markSettingsDirty(false);
   updateAutoDelayInputState();
+  updateFallbackThreadIntervalInputState();
   updatePanelModeUI();
   updateMailProviderUI();
   updateButtonStates();
@@ -887,18 +1171,240 @@ async function restoreState() {
   }
 }
 
+function openExternalUrl(url) {
+  const targetUrl = String(url || '').trim();
+  if (!targetUrl) {
+    return;
+  }
+
+  if (chrome?.tabs?.create) {
+    chrome.tabs.create({ url: targetUrl, active: true }).catch(() => {
+      window.open(targetUrl, '_blank', 'noopener');
+    });
+    return;
+  }
+
+  window.open(targetUrl, '_blank', 'noopener');
+}
+
+function createUpdateNoteList(notes = []) {
+  if (!Array.isArray(notes) || notes.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'update-release-empty';
+    empty.textContent = '该版本未提供可解析的更新说明，请查看完整更新日志。';
+    return empty;
+  }
+
+  const list = document.createElement('ul');
+  list.className = 'update-release-notes';
+
+  notes.forEach((note) => {
+    const item = document.createElement('li');
+    item.textContent = note;
+    list.appendChild(item);
+  });
+
+  return list;
+}
+
+function renderUpdateReleaseList(releases = []) {
+  if (!updateReleaseList) {
+    return;
+  }
+
+  updateReleaseList.innerHTML = '';
+
+  releases.forEach((release) => {
+    const item = document.createElement('article');
+    item.className = 'update-release-item';
+
+    const head = document.createElement('div');
+    head.className = 'update-release-head';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'update-release-title-row';
+
+    const version = document.createElement('span');
+    version.className = 'update-release-version';
+    version.textContent = `v${release.version}`;
+    titleRow.appendChild(version);
+
+    if (release.title) {
+      const name = document.createElement('span');
+      name.className = 'update-release-name';
+      name.textContent = release.title;
+      titleRow.appendChild(name);
+    }
+
+    head.appendChild(titleRow);
+
+    const publishedAt = sidepanelUpdateService?.formatReleaseDate?.(release.publishedAt) || '';
+    if (publishedAt) {
+      const date = document.createElement('span');
+      date.className = 'update-release-date';
+      date.textContent = publishedAt;
+      head.appendChild(date);
+    }
+
+    item.appendChild(head);
+    item.appendChild(createUpdateNoteList(release.notes));
+    updateReleaseList.appendChild(item);
+  });
+}
+
+function resetUpdateCard() {
+  if (updateSection) {
+    updateSection.hidden = true;
+  }
+  if (updateCardVersion) {
+    updateCardVersion.textContent = '';
+  }
+  if (updateCardSummary) {
+    updateCardSummary.textContent = '';
+  }
+  if (updateReleaseList) {
+    updateReleaseList.innerHTML = '';
+  }
+  if (btnOpenRelease) {
+    btnOpenRelease.hidden = true;
+    btnOpenRelease.onclick = null;
+  }
+}
+
+function renderReleaseSnapshot(snapshot) {
+  currentReleaseSnapshot = snapshot;
+
+  if (!extensionUpdateStatus || !extensionVersionMeta) {
+    return;
+  }
+
+  extensionUpdateStatus.classList.remove('is-update-available', 'is-check-failed', 'is-version-label');
+
+  const localVersionText = snapshot?.localVersion ? `v${snapshot.localVersion}` : '';
+  const logUrl = snapshot?.logUrl || snapshot?.releasesPageUrl || sidepanelUpdateService?.releasesPageUrl || '';
+
+  if (btnReleaseLog) {
+    btnReleaseLog.onclick = () => openExternalUrl(logUrl);
+    btnReleaseLog.hidden = true;
+  }
+  extensionVersionMeta.hidden = true;
+  extensionVersionMeta.textContent = '';
+
+  switch (snapshot?.status) {
+    case 'update-available': {
+      extensionUpdateStatus.textContent = '有更新';
+      extensionUpdateStatus.classList.add('is-update-available');
+      if (btnReleaseLog) {
+        btnReleaseLog.hidden = false;
+      }
+
+      if (updateSection) {
+        updateSection.hidden = false;
+      }
+      if (updateCardVersion) {
+        updateCardVersion.textContent = `最新版本 v${snapshot.latestVersion}`;
+      }
+      if (updateCardSummary) {
+        const updateCount = Array.isArray(snapshot.newerReleases) ? snapshot.newerReleases.length : 0;
+        updateCardSummary.textContent = updateCount > 1
+          ? `当前 ${localVersionText}，共有 ${updateCount} 个新版本可更新。`
+          : `当前 ${localVersionText}，可更新到 v${snapshot.latestVersion}。`;
+      }
+      renderUpdateReleaseList(snapshot.newerReleases || []);
+      if (btnOpenRelease) {
+        btnOpenRelease.hidden = false;
+        btnOpenRelease.textContent = '前往更新';
+        btnOpenRelease.onclick = () => openExternalUrl(logUrl);
+      }
+      break;
+    }
+
+    case 'latest': {
+      extensionUpdateStatus.textContent = localVersionText || 'v0.0.0';
+      extensionUpdateStatus.classList.add('is-version-label');
+      resetUpdateCard();
+      break;
+    }
+
+    case 'empty': {
+      extensionUpdateStatus.textContent = localVersionText || 'v0.0.0';
+      extensionUpdateStatus.classList.add('is-version-label');
+      resetUpdateCard();
+      break;
+    }
+
+    case 'error':
+    default: {
+      extensionUpdateStatus.textContent = localVersionText || 'v0.0.0';
+      extensionUpdateStatus.classList.add('is-version-label', 'is-check-failed');
+      extensionVersionMeta.textContent = snapshot?.errorMessage || 'GitHub Releases 检查失败';
+      extensionVersionMeta.hidden = false;
+      resetUpdateCard();
+      break;
+    }
+  }
+}
+
+async function initializeReleaseInfo() {
+  const fallbackReleaseUrl = sidepanelUpdateService?.releasesPageUrl || 'https://github.com/QLHazyCoder/codex-oauth-automation-extension/releases';
+
+  if (btnReleaseLog) {
+    btnReleaseLog.onclick = () => openExternalUrl(currentReleaseSnapshot?.logUrl || fallbackReleaseUrl);
+  }
+
+  if (!extensionUpdateStatus || !extensionVersionMeta) {
+    return;
+  }
+
+  const localVersion = sidepanelUpdateService?.stripVersionPrefix?.(chrome.runtime.getManifest()?.version || '') || '';
+  extensionUpdateStatus.textContent = localVersion ? `v${localVersion}` : 'v0.0.0';
+  extensionUpdateStatus.classList.remove('is-update-available', 'is-check-failed');
+  extensionUpdateStatus.classList.add('is-version-label');
+  extensionVersionMeta.hidden = true;
+  extensionVersionMeta.textContent = '';
+  if (btnReleaseLog) {
+    btnReleaseLog.hidden = true;
+  }
+  resetUpdateCard();
+
+  if (!sidepanelUpdateService) {
+    extensionVersionMeta.textContent = '更新检查服务不可用';
+    extensionVersionMeta.hidden = false;
+    return;
+  }
+
+  const snapshot = await sidepanelUpdateService.getReleaseSnapshot();
+  renderReleaseSnapshot(snapshot);
+}
+
 function syncPasswordField(state) {
   inputPassword.value = state.customPassword || state.password || '';
 }
 
 function getSelectedEmailGenerator() {
-  return selectEmailGenerator.value === 'cloudflare' ? 'cloudflare' : 'duck';
+  const generator = String(selectEmailGenerator.value || '').trim().toLowerCase();
+  if (generator === 'custom' || generator === 'manual') {
+    return 'custom';
+  }
+  if (generator === 'cloudflare') {
+    return 'cloudflare';
+  }
+  return 'duck';
 }
 
 function getEmailGeneratorUiCopy() {
+  if (getSelectedEmailGenerator() === 'custom') {
+    return {
+      buttonLabel: '自定义邮箱',
+      placeholder: '请填写本轮要使用的注册邮箱',
+      successVerb: '使用',
+      label: '自定义邮箱',
+    };
+  }
+
   if (getSelectedEmailGenerator() === 'cloudflare') {
     return {
-      buttonLabel: '生成 Cloudflare',
+      buttonLabel: '生成',
       placeholder: '点击生成 Cloudflare 邮箱，或手动粘贴邮箱',
       successVerb: '生成',
       label: 'Cloudflare 邮箱',
@@ -906,11 +1412,15 @@ function getEmailGeneratorUiCopy() {
   }
 
   return {
-    buttonLabel: '获取 Duck',
+    buttonLabel: '获取',
     placeholder: '点击获取 DuckDuckGo 邮箱，或手动粘贴邮箱',
     successVerb: '获取',
     label: 'Duck 邮箱',
   };
+}
+
+function isCustomEmailGeneratorSelected() {
+  return getSelectedEmailGenerator() === 'custom';
 }
 
 function getHotmailAccounts(state = latestState) {
@@ -926,6 +1436,10 @@ function getCurrentHotmailEmail(state = latestState) {
   return String(getCurrentHotmailAccount(state)?.email || '').trim();
 }
 
+function getMailProviderLoginConfig(provider = selectMailProvider.value) {
+  return MAIL_PROVIDER_LOGIN_CONFIGS[String(provider || '').trim()] || null;
+}
+
 function isCurrentEmailManagedByHotmail(state = latestState) {
   const hotmailEmail = getCurrentHotmailEmail(state);
   if (!hotmailEmail) {
@@ -935,6 +1449,32 @@ function isCurrentEmailManagedByHotmail(state = latestState) {
   const inputEmailValue = String(inputEmail.value || '').trim();
   const stateEmailValue = String(state?.email || '').trim();
   return inputEmailValue === hotmailEmail || stateEmailValue === hotmailEmail;
+}
+
+function isCurrentEmailManagedByGeneratedAlias(provider = latestState?.mailProvider, state = latestState) {
+  const normalizedProvider = String(provider || '').trim();
+  if (!usesGeneratedAliasMailProvider(normalizedProvider)) {
+    return false;
+  }
+
+  const inputEmailValue = String(inputEmail.value || '').trim().toLowerCase();
+  const stateEmailValue = String(state?.email || '').trim().toLowerCase();
+
+  if (normalizedProvider === '2925') {
+    return inputEmailValue.endsWith('@2925.com') || stateEmailValue.endsWith('@2925.com');
+  }
+
+  return false;
+}
+
+function updateMailLoginButtonState() {
+  if (!btnMailLogin) {
+    return;
+  }
+
+  const config = getMailProviderLoginConfig();
+  btnMailLogin.disabled = !config;
+  btnMailLogin.title = config ? `打开 ${config.label} 登录页` : '当前邮箱服务无需网页登录';
 }
 
 function getHotmailAccountsByUsage(mode = 'all', state = latestState) {
@@ -1142,9 +1682,15 @@ function renderHotmailAccounts() {
 }
 
 function updateMailProviderUI() {
+  const use2925 = selectMailProvider.value === '2925';
+  const useGeneratedAlias = usesGeneratedAliasMailProvider(selectMailProvider.value);
   const useInbucket = selectMailProvider.value === 'inbucket';
   const useHotmail = selectMailProvider.value === 'hotmail-api';
-  const useEmailGenerator = !useHotmail;
+  const useCustomEmail = !useGeneratedAlias && !useHotmail && isCustomEmailGeneratorSelected();
+  const useEmailGenerator = !useHotmail && !useGeneratedAlias;
+  updateMailLoginButtonState();
+  rowEmailPrefix.style.display = useGeneratedAlias ? '' : 'none';
+  const hotmailServiceMode = getSelectedHotmailServiceMode();
   rowInbucketHost.style.display = useInbucket ? '' : 'none';
   rowInbucketMailbox.style.display = useInbucket ? '' : 'none';
   const useCloudflare = selectEmailGenerator.value === 'cloudflare';
@@ -1163,18 +1709,34 @@ function updateMailProviderUI() {
   if (hotmailSection) {
     hotmailSection.style.display = useHotmail ? '' : 'none';
   }
-  selectEmailGenerator.disabled = useHotmail;
-  btnFetchEmail.hidden = useHotmail;
-  inputEmail.readOnly = useHotmail;
+  labelEmailPrefix.textContent = '邮箱前缀';
+  inputEmailPrefix.placeholder = '例如 abc';
+  selectEmailGenerator.disabled = useHotmail || useGeneratedAlias;
+  if (rowHotmailServiceMode) {
+    rowHotmailServiceMode.style.display = useHotmail ? '' : 'none';
+  }
+  if (rowHotmailRemoteBaseUrl) {
+    rowHotmailRemoteBaseUrl.style.display = useHotmail && hotmailServiceMode === HOTMAIL_SERVICE_MODE_REMOTE ? '' : 'none';
+  }
+  if (rowHotmailLocalBaseUrl) {
+    rowHotmailLocalBaseUrl.style.display = useHotmail && hotmailServiceMode === HOTMAIL_SERVICE_MODE_LOCAL ? '' : 'none';
+  }
+  btnFetchEmail.hidden = useHotmail || useCustomEmail;
+  inputEmail.readOnly = useHotmail || useGeneratedAlias;
   const uiCopy = getEmailGeneratorUiCopy();
-  inputEmail.placeholder = useHotmail ? '由 Hotmail 账号池自动分配' : uiCopy.placeholder;
+  inputEmail.placeholder = useHotmail
+    ? '由 Hotmail 账号池自动分配'
+    : (use2925 ? '步骤 3 自动生成 2925 邮箱并回填' : uiCopy.placeholder);
+  btnFetchEmail.disabled = useGeneratedAlias || useCustomEmail || isAutoRunLockedPhase();
   if (!btnFetchEmail.disabled) {
     btnFetchEmail.textContent = uiCopy.buttonLabel;
   }
   if (autoHintText) {
     autoHintText.textContent = useHotmail
       ? '请先校验并选择一个 Hotmail 账号'
-      : '先自动获取邮箱，或手动粘贴邮箱后再继续';
+      : (useGeneratedAlias
+        ? '步骤 3 会自动生成邮箱，无需手动获取'
+        : (useCustomEmail ? '请先填写自定义注册邮箱，成功一轮后会自动清空' : '先自动获取邮箱，或手动粘贴邮箱后再继续'));
   }
   if (useHotmail) {
     inputEmail.value = getCurrentHotmailEmail();
@@ -1418,6 +1980,9 @@ function escapeHtml(text) {
 async function fetchGeneratedEmail(options = {}) {
   const { showFailureToast = true } = options;
   const uiCopy = getEmailGeneratorUiCopy();
+  if (isCustomEmailGeneratorSelected()) {
+    throw new Error('当前邮箱生成方式为自定义邮箱，请直接填写注册邮箱。');
+  }
   const defaultLabel = uiCopy.buttonLabel;
   btnFetchEmail.disabled = true;
   btnFetchEmail.textContent = '...';
@@ -1704,9 +2269,23 @@ document.querySelectorAll('.step-btn').forEach(btn => {
           if (response?.error) {
             throw new Error(response.error);
           }
+        } else if (usesGeneratedAliasMailProvider(selectMailProvider.value)) {
+          const emailPrefix = inputEmailPrefix.value.trim();
+          if (!emailPrefix) {
+            showToast('请先填写 2925 邮箱前缀。', 'warn');
+            return;
+          }
+          const response = await chrome.runtime.sendMessage({ type: 'EXECUTE_STEP', source: 'sidepanel', payload: { step, emailPrefix } });
+          if (response?.error) {
+            throw new Error(response.error);
+          }
         } else {
           let email = inputEmail.value.trim();
           if (!email) {
+            if (isCustomEmailGeneratorSelected()) {
+              showToast('当前邮箱生成方式为自定义邮箱，请先填写注册邮箱后再执行第 3 步。', 'warn');
+              return;
+            }
             try {
               email = await fetchGeneratedEmail({ showFailureToast: false });
             } catch (err) {
@@ -1732,7 +2311,7 @@ document.querySelectorAll('.step-btn').forEach(btn => {
 });
 
 btnFetchEmail.addEventListener('click', async () => {
-  if (selectMailProvider.value === 'hotmail-api') {
+  if (selectMailProvider.value === 'hotmail-api' || isCustomEmailGeneratorSelected()) {
     return;
   }
   await fetchGeneratedEmail().catch(() => { });
@@ -1740,6 +2319,15 @@ btnFetchEmail.addEventListener('click', async () => {
 
 btnToggleHotmailList?.addEventListener('click', () => {
   setHotmailListExpanded(!hotmailListExpanded);
+});
+
+btnHotmailUsageGuide?.addEventListener('click', async () => {
+  await openConfirmModal({
+    title: '使用教程',
+    message: '由于第三方服务接口结构不同，所以暂时无法使用，如果您的token可以直连微软，请测试本地功能，详细功能请看项目根目录的readme文件',
+    confirmLabel: '确定',
+    confirmVariant: 'btn-primary',
+  });
 });
 
 btnClearUsedHotmailAccounts?.addEventListener('click', async () => {
@@ -1975,6 +2563,19 @@ btnToggleVpsPassword.addEventListener('click', () => {
   syncVpsPasswordToggleLabel();
 });
 
+btnMailLogin?.addEventListener('click', async () => {
+  const config = getMailProviderLoginConfig();
+  if (!config) {
+    return;
+  }
+
+  try {
+    await chrome.tabs.create({ url: config.url, active: true });
+  } catch (err) {
+    showToast(`打开${config.label}失败：${err.message}`, 'error');
+  }
+});
+
 localCpaStep9ModeButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const nextMode = button.dataset.localCpaStep9Mode;
@@ -1982,6 +2583,22 @@ localCpaStep9ModeButtons.forEach((button) => {
       return;
     }
     setLocalCpaStep9Mode(nextMode);
+    markSettingsDirty(true);
+    saveSettings({ silent: true }).catch(() => { });
+  });
+});
+
+hotmailServiceModeButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    if (button.disabled) {
+      return;
+    }
+    const nextMode = button.dataset.hotmailServiceMode;
+    if (getSelectedHotmailServiceMode() === normalizeHotmailServiceMode(nextMode)) {
+      return;
+    }
+    setHotmailServiceMode(nextMode);
+    updateMailProviderUI();
     markSettingsDirty(true);
     saveSettings({ silent: true }).catch(() => { });
   });
@@ -2043,7 +2660,7 @@ btnAutoStartClose?.addEventListener('click', () => resolveModalChoice(null));
 // Auto Run
 btnAutoRun.addEventListener('click', async () => {
   try {
-    const totalRuns = Math.min(50, Math.max(1, parseInt(inputRunCount.value, 10) || 1));
+    const totalRuns = getRunCountValue();
     let mode = 'restart';
 
     if (shouldOfferAutoModeChoice()) {
@@ -2070,7 +2687,7 @@ btnAutoRun.addEventListener('click', async () => {
       payload: {
         totalRuns,
         delayMinutes,
-        autoRunSkipFailures: inputAutoSkipFailures.checked,
+        autoRunSkipFailures: true,
         mode,
       },
     });
@@ -2087,7 +2704,10 @@ btnAutoRun.addEventListener('click', async () => {
 btnAutoContinue.addEventListener('click', async () => {
   const email = inputEmail.value.trim();
   if (!email) {
-    showToast('请先获取或粘贴邮箱。', 'warn');
+    showToast(
+      isCustomEmailGeneratorSelected() ? '请先填写自定义注册邮箱。' : '请先获取或粘贴邮箱。',
+      'warn'
+    );
     return;
   }
   autoContinueBar.style.display = 'none';
@@ -2200,6 +2820,16 @@ inputVpsPassword.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 
+[inputHotmailRemoteBaseUrl, inputHotmailLocalBaseUrl].forEach((input) => {
+  input?.addEventListener('input', () => {
+    markSettingsDirty(true);
+    scheduleSettingsAutoSave();
+  });
+  input?.addEventListener('blur', () => {
+    saveSettings({ silent: true }).catch(() => { });
+  });
+});
+
 inputPassword.addEventListener('input', () => {
   markSettingsDirty(true);
   updateButtonStates();
@@ -2213,7 +2843,13 @@ selectMailProvider.addEventListener('change', async () => {
   const previousProvider = latestState?.mailProvider || '';
   const nextProvider = selectMailProvider.value;
   updateMailProviderUI();
-  if (previousProvider === 'hotmail-api' && nextProvider !== 'hotmail-api' && isCurrentEmailManagedByHotmail()) {
+  const leavingHotmail = previousProvider === 'hotmail-api'
+    && nextProvider !== 'hotmail-api'
+    && isCurrentEmailManagedByHotmail();
+  const leavingGeneratedAlias = previousProvider !== nextProvider
+    && usesGeneratedAliasMailProvider(previousProvider)
+    && isCurrentEmailManagedByGeneratedAlias(previousProvider);
+  if (leavingHotmail || leavingGeneratedAlias) {
     await clearRegistrationEmail({ silent: true }).catch(() => { });
   }
   markSettingsDirty(true);
@@ -2301,6 +2937,14 @@ inputSub2ApiGroup.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 
+inputEmailPrefix.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputEmailPrefix.addEventListener('blur', () => {
+  saveSettings({ silent: true }).catch(() => {});
+});
+
 inputInbucketMailbox.addEventListener('input', () => {
   markSettingsDirty(true);
   scheduleSettingsAutoSave();
@@ -2317,8 +2961,39 @@ inputInbucketHost.addEventListener('blur', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 
-inputAutoSkipFailures.addEventListener('change', () => {
+inputRunCount.addEventListener('input', () => {
+  updateFallbackThreadIntervalInputState();
+});
+inputRunCount.addEventListener('blur', () => {
+  inputRunCount.value = String(getRunCountValue());
+  updateFallbackThreadIntervalInputState();
+});
+
+inputAutoSkipFailures.addEventListener('change', async () => {
+  if (inputAutoSkipFailures.checked && !isAutoSkipFailuresPromptDismissed()) {
+    const result = await openAutoSkipFailuresConfirmModal();
+    if (!result.confirmed) {
+      inputAutoSkipFailures.checked = false;
+      updateFallbackThreadIntervalInputState();
+      return;
+    }
+    if (result.dismissPrompt) {
+      setAutoSkipFailuresPromptDismissed(true);
+    }
+  }
+  updateFallbackThreadIntervalInputState();
   markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+inputAutoSkipFailuresThreadIntervalMinutes.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputAutoSkipFailuresThreadIntervalMinutes.addEventListener('blur', () => {
+  inputAutoSkipFailuresThreadIntervalMinutes.value = String(
+    normalizeAutoRunThreadIntervalMinutes(inputAutoSkipFailuresThreadIntervalMinutes.value)
+  );
   saveSettings({ silent: true }).catch(() => { });
 });
 
@@ -2334,6 +3009,19 @@ inputAutoDelayMinutes.addEventListener('input', () => {
 });
 inputAutoDelayMinutes.addEventListener('blur', () => {
   inputAutoDelayMinutes.value = String(normalizeAutoDelayMinutes(inputAutoDelayMinutes.value));
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+function syncAutoStepDelayInputs() {
+  inputAutoStepDelaySeconds.value = formatAutoStepDelayInputValue(inputAutoStepDelaySeconds.value);
+}
+
+inputAutoStepDelaySeconds.addEventListener('input', () => {
+  markSettingsDirty(true);
+  scheduleSettingsAutoSave();
+});
+inputAutoStepDelaySeconds.addEventListener('blur', () => {
+  syncAutoStepDelayInputs();
   saveSettings({ silent: true }).catch(() => { });
 });
 
@@ -2427,12 +3115,25 @@ chrome.runtime.onMessage.addListener((message) => {
           inputEmail.value = getCurrentHotmailEmail();
         }
       }
+      if (message.payload.autoRunSkipFailures !== undefined) {
+        inputAutoSkipFailures.checked = true;
+        updateFallbackThreadIntervalInputState();
+      }
       if (message.payload.autoRunDelayEnabled !== undefined) {
         inputAutoDelayEnabled.checked = Boolean(message.payload.autoRunDelayEnabled);
         updateAutoDelayInputState();
       }
       if (message.payload.autoRunDelayMinutes !== undefined) {
         inputAutoDelayMinutes.value = String(normalizeAutoDelayMinutes(message.payload.autoRunDelayMinutes));
+      }
+      if (message.payload.autoRunFallbackThreadIntervalMinutes !== undefined) {
+        inputAutoSkipFailuresThreadIntervalMinutes.value = String(
+          normalizeAutoRunThreadIntervalMinutes(message.payload.autoRunFallbackThreadIntervalMinutes)
+        );
+        updateFallbackThreadIntervalInputState();
+      }
+      if (message.payload.autoStepDelaySeconds !== undefined) {
+        inputAutoStepDelaySeconds.value = formatAutoStepDelayInputValue(message.payload.autoStepDelaySeconds);
       }
       break;
     }
@@ -2505,6 +3206,9 @@ initHotmailListExpandedState();
 updateSaveButtonState();
 updateConfigMenuControls();
 setLocalCpaStep9Mode(DEFAULT_LOCAL_CPA_STEP9_MODE);
+initializeReleaseInfo().catch((err) => {
+  console.error('Failed to initialize release info:', err);
+});
 restoreState().then(() => {
   syncPasswordToggleLabel();
   syncVpsUrlToggleLabel();
