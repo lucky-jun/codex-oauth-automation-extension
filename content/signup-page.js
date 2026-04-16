@@ -103,6 +103,8 @@ const VERIFICATION_CODE_INPUT_SELECTOR = [
 const ONE_TIME_CODE_LOGIN_PATTERN = /使用一次性验证码登录|改用(?:一次性)?验证码(?:登录)?|使用验证码登录|一次性验证码|验证码登录|one[-\s]*time\s*(?:passcode|password|code)|use\s+(?:a\s+)?one[-\s]*time\s*(?:passcode|password|code)(?:\s+instead)?|use\s+(?:a\s+)?code(?:\s+instead)?|sign\s+in\s+with\s+(?:email|code)|email\s+(?:me\s+)?(?:a\s+)?code/i;
 
 const RESEND_VERIFICATION_CODE_PATTERN = /重新发送(?:验证码)?|再次发送(?:验证码)?|重发(?:验证码)?|未收到(?:验证码|邮件)|resend(?:\s+code)?|send\s+(?:a\s+)?new\s+code|send\s+(?:it\s+)?again|request\s+(?:a\s+)?new\s+code|didn'?t\s+receive/i;
+const CHATGPT_ONBOARDING_TEXT_PATTERN = /welcome\s+to\s+chatgpt|what\s+should\s+chatgpt\s+call\s+you|how\s+do\s+you\s+want\s+chatgpt\s+to\s+respond|tell\s+chatgpt\s+what\s+traits|personal(?:ize|ise)\s+your\s+experience|介绍一下你自己|ChatGPT 应该如何称呼你|你希望 ChatGPT 如何回应/i;
+const CHATGPT_HOME_TEXT_PATTERN = /new\s+chat|temporary\s+chat|message\s+chatgpt|send\s+a\s+message|chatgpt\s+can\s+make\s+mistakes|新建聊天|临时聊天|给\s*ChatGPT\s*发消息|ChatGPT\s*可能会犯错/i;
 
 function isVisibleElement(el) {
   if (!el) return false;
@@ -779,7 +781,67 @@ function getStep5ErrorText() {
 }
 
 function isChatgptOnboardingPage() {
-  return /chatgpt\.com/i.test(location.href);
+  if (!isChatgptUrl()) {
+    return false;
+  }
+
+  if (findChatgptSkipButton()) {
+    return true;
+  }
+
+  return CHATGPT_ONBOARDING_TEXT_PATTERN.test(getPageTextSnapshot());
+}
+
+function isChatgptUrl(rawUrl = location.href) {
+  return /(^https?:\/\/)?([^.]+\.)?chatgpt\.com(?::\d+)?/i.test(rawUrl || '');
+}
+
+function hasVisibleElementMatchingSelector(selector) {
+  return Array.from(document.querySelectorAll(selector)).some(isVisibleElement);
+}
+
+function isChatgptAuthenticatedHomePage() {
+  if (!isChatgptUrl()) {
+    return false;
+  }
+
+  if (isChatgptOnboardingPage()) {
+    return false;
+  }
+
+  const appShellSelectors = [
+    'textarea[placeholder*="Message" i]',
+    'textarea[aria-label*="Message" i]',
+    '[data-testid="composer-root"]',
+    '[data-testid="history-and-skills"]',
+    'button[aria-label*="New chat" i]',
+    'a[aria-label*="New chat" i]',
+    'a[href^="/c/"]',
+  ];
+  if (appShellSelectors.some((selector) => hasVisibleElementMatchingSelector(selector))) {
+    return true;
+  }
+
+  return CHATGPT_HOME_TEXT_PATTERN.test(getPageTextSnapshot());
+}
+
+async function waitForChatgptPostSignupState(timeout = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+
+    if (isChatgptOnboardingPage()) {
+      return 'onboarding';
+    }
+
+    if (isChatgptAuthenticatedHomePage()) {
+      return 'home';
+    }
+
+    await sleep(300);
+  }
+
+  return null;
 }
 
 async function waitForStep5SubmitOutcome(timeout = 15000) {
@@ -799,6 +861,10 @@ async function waitForStep5SubmitOutcome(timeout = 15000) {
 
     if (isChatgptOnboardingPage()) {
       return { success: true, chatgptOnboarding: true };
+    }
+
+    if (isChatgptAuthenticatedHomePage()) {
+      return { success: true, chatgptHome: true };
     }
 
     if (isStep8Ready()) {
@@ -2155,10 +2221,20 @@ async function step5_fillNameBirthday(payload) {
     throw new Error(`步骤 5：${outcome.errorText}`);
   }
 
-  if (outcome.chatgptOnboarding) {
-    log(`步骤 5：资料已通过，页面已跳转到 ChatGPT 引导页。`, 'ok');
-    reportComplete(5, { chatgptOnboarding: true });
-    return { chatgptOnboarding: true };
+  if (outcome.chatgptOnboarding || outcome.chatgptHome) {
+    if (outcome.chatgptOnboarding) {
+      log('步骤 5：资料已通过，页面已跳转到 ChatGPT 引导页。', 'ok');
+    } else {
+      log('步骤 5：资料已通过，页面已进入已登录的 ChatGPT 页面。', 'ok');
+    }
+    reportComplete(5, {
+      chatgptOnboarding: Boolean(outcome.chatgptOnboarding),
+      chatgptHome: Boolean(outcome.chatgptHome),
+    });
+    return {
+      chatgptOnboarding: Boolean(outcome.chatgptOnboarding),
+      chatgptHome: Boolean(outcome.chatgptHome),
+    };
   }
 
   log(`步骤 5：资料已通过。`, 'ok');
@@ -2173,6 +2249,7 @@ function findChatgptSkipButton() {
   // Look for buttons containing "Skip" or "跳过" text with btn-ghost class
   const buttons = document.querySelectorAll('button');
   for (const btn of buttons) {
+    if (!isVisibleElement(btn)) continue;
     const text = (btn.textContent || '').trim();
     if (/^(skip|跳过)$/i.test(text) && /btn-ghost/i.test(btn.className)) {
       return btn;
@@ -2180,6 +2257,7 @@ function findChatgptSkipButton() {
   }
   // Fallback: look for any button matching skip text without class constraint
   for (const btn of buttons) {
+    if (!isVisibleElement(btn)) continue;
     const text = (btn.textContent || '').trim();
     if (/^(skip|跳过)$/i.test(text)) {
       return btn;
@@ -2202,6 +2280,18 @@ async function waitForChatgptSkipButton(timeout = 15000) {
 }
 
 async function skipChatgptOnboarding() {
+  log('ChatGPT 页面：正在确认是引导页还是已登录主页...');
+
+  const initialState = await waitForChatgptPostSignupState(15000);
+  if (initialState === 'home') {
+    log('ChatGPT 页面：未出现可跳过引导，已进入登录后的 ChatGPT 页面，按注册成功处理。', 'ok');
+    return { success: true, alreadyCompleted: true };
+  }
+
+  if (initialState !== 'onboarding') {
+    throw new Error('ChatGPT 页面：未检测到可跳过引导，也未确认进入登录后的主页。URL: ' + location.href);
+  }
+
   log('ChatGPT 引导页：正在查找第一个"Skip/跳过"按钮...');
 
   // Find first Skip button: sibling of "Next" button, with btn-ghost class
@@ -2220,7 +2310,11 @@ async function skipChatgptOnboarding() {
   // Find second Skip button: sibling of "Continue" button, with btn-ghost class
   const secondSkipBtn = await waitForChatgptSkipButton(5000);
   if (!secondSkipBtn) {
-    log('ChatGPT 引导页：5秒内未找到第二个"Skip/跳过"按钮，判定注册已完成。', 'ok');
+    if (isChatgptAuthenticatedHomePage()) {
+      log('ChatGPT 引导页：未找到第二个"Skip/跳过"按钮，但页面已进入登录后的 ChatGPT 页面。', 'ok');
+    } else {
+      log('ChatGPT 引导页：5秒内未找到第二个"Skip/跳过"按钮，判定注册已完成。', 'ok');
+    }
     return { success: true };
   }
 

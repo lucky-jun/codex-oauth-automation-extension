@@ -7433,6 +7433,27 @@ async function executeStep4(state) {
 // Step 5: Fill Name & Birthday (via signup-page.js)
 // ============================================================
 
+async function waitForStep5ChatgptRedirect(tabId, timeoutMs = 15000) {
+  if (!Number.isInteger(tabId)) {
+    return null;
+  }
+
+  const matchedTab = await waitForTabUrlMatch(tabId, (url) => /chatgpt\.com/i.test(url || ''), {
+    timeoutMs,
+    retryDelayMs: 300,
+  });
+  if (matchedTab) {
+    return matchedTab;
+  }
+
+  const currentTab = await chrome.tabs.get(tabId).catch(() => null);
+  if (currentTab && /chatgpt\.com/i.test(currentTab.url || '')) {
+    return currentTab;
+  }
+
+  return null;
+}
+
 async function executeStep5(state) {
   const { firstName, lastName } = generateRandomName();
   const { year, month, day } = generateRandomBirthday();
@@ -7468,16 +7489,19 @@ async function executeStep5(state) {
     return;
   }
 
+  if (step5Result?.chatgptHome) {
+    await addLog('步骤 5：检测到已进入 ChatGPT 页面，注册成功。', 'ok');
+    return;
+  }
+
   // Case 2: content script died due to cross-origin navigation — check tab URL
   if (step5TransportError) {
     const signupTabId = await getTabId('signup-page');
-    if (signupTabId) {
-      const tab = await chrome.tabs.get(signupTabId).catch(() => null);
-      if (tab && /chatgpt\.com/i.test(tab.url || '')) {
-        await addLog('步骤 5：内容脚本因页面跳转到 ChatGPT 而断开，正在处理引导页跳过...');
-        await handleChatgptOnboardingSkip(signupTabId);
-        return;
-      }
+    const redirectedTab = await waitForStep5ChatgptRedirect(signupTabId);
+    if (redirectedTab) {
+      await addLog('步骤 5：内容脚本因页面跳转到 ChatGPT 而断开，正在处理引导页跳过...');
+      await handleChatgptOnboardingSkip(redirectedTab.id);
+      return;
     }
     // Not on chatgpt.com — re-throw the original error
     throw step5TransportError;
@@ -7532,6 +7556,12 @@ async function handleChatgptOnboardingSkip(knownTabId) {
 
   if (result?.error) {
     throw new Error(result.error);
+  }
+
+  if (result?.alreadyCompleted) {
+    await addLog('步骤 5：已进入 ChatGPT 页面，无需继续跳过引导，注册成功。', 'ok');
+    await completeStepFromBackground(5, { chatgptHome: true });
+    return;
   }
 
   await addLog('步骤 5：ChatGPT 引导页跳过完成，注册成功。', 'ok');
