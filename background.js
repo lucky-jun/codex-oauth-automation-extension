@@ -4,6 +4,15 @@ importScripts(
   'background/panel-bridge.js',
   'background/generated-email-helpers.js',
   'background/signup-flow-helpers.js',
+  'background/steps/step1.js',
+  'background/steps/step2.js',
+  'background/steps/step3.js',
+  'background/steps/step4.js',
+  'background/steps/step5.js',
+  'background/steps/step6.js',
+  'background/steps/step7.js',
+  'background/steps/step8.js',
+  'background/steps/step9.js',
   'data/names.js',
   'hotmail-utils.js',
   'microsoft-email.js',
@@ -6407,6 +6416,123 @@ const signupFlowHelpers = self.MultiPageSignupFlowHelpers?.createSignupFlowHelpe
   SIGNUP_PAGE_INJECT_FILES,
   waitForTabUrlMatch,
 });
+const step1Executor = self.MultiPageBackgroundStep1?.createStep1Executor({
+  addLog,
+  completeStepFromBackground,
+  ensureSignupEntryPageReady,
+});
+const step2Executor = self.MultiPageBackgroundStep2?.createStep2Executor({
+  addLog,
+  chrome,
+  completeStepFromBackground,
+  ensureContentScriptReadyOnTab,
+  ensureSignupEntryPageReady,
+  ensureSignupPasswordPageReadyInTab,
+  getTabId,
+  isTabAlive,
+  resolveSignupEmailForFlow,
+  sendToContentScriptResilient,
+  SIGNUP_PAGE_INJECT_FILES,
+});
+const step3Executor = self.MultiPageBackgroundStep3?.createStep3Executor({
+  addLog,
+  chrome,
+  ensureContentScriptReadyOnTab,
+  generatePassword,
+  getTabId,
+  isTabAlive,
+  sendToContentScript,
+  setPasswordState,
+  setState,
+  SIGNUP_PAGE_INJECT_FILES,
+});
+const step4Executor = self.MultiPageBackgroundStep4?.createStep4Executor({
+  addLog,
+  chrome,
+  completeStepFromBackground,
+  confirmCustomVerificationStepBypass,
+  getMailConfig,
+  getTabId,
+  HOTMAIL_PROVIDER,
+  isTabAlive,
+  LUCKMAIL_PROVIDER,
+  CLOUDFLARE_TEMP_EMAIL_PROVIDER,
+  resolveVerificationStep,
+  reuseOrCreateTab,
+  sendToContentScriptResilient,
+  shouldUseCustomRegistrationEmail,
+  STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,
+  throwIfStopped,
+});
+const step5Executor = self.MultiPageBackgroundStep5?.createStep5Executor({
+  addLog,
+  generateRandomBirthday,
+  generateRandomName,
+  getTabId,
+  handleChatgptOnboardingSkip,
+  isRetryableContentScriptTransportError,
+  LOG_PREFIX,
+  sendToContentScript,
+  waitForStep5ChatgptRedirect,
+});
+const step6Executor = self.MultiPageBackgroundStep6?.createStep6Executor({
+  addLog,
+  completeStepFromBackground,
+  getLoginAuthStateLabel,
+  getState,
+  isStep6RecoverableResult,
+  isStep6SuccessResult,
+  refreshOAuthUrlBeforeStep6,
+  reuseOrCreateTab,
+  runPreStep6CookieCleanup,
+  sendToContentScriptResilient,
+  shouldSkipLoginVerificationForCpaCallback,
+  skipLoginVerificationStepsForCpaCallback,
+  throwIfStopped,
+});
+const step7Executor = self.MultiPageBackgroundStep7?.createStep7Executor({
+  addLog,
+  chrome,
+  CLOUDFLARE_TEMP_EMAIL_PROVIDER,
+  confirmCustomVerificationStepBypass,
+  ensureStep7VerificationPageReady,
+  executeStep6: (...args) => executeStep6(...args),
+  getMailConfig,
+  getState,
+  getTabId,
+  HOTMAIL_PROVIDER,
+  isTabAlive,
+  isVerificationMailPollingError,
+  LUCKMAIL_PROVIDER,
+  resolveVerificationStep,
+  reuseOrCreateTab,
+  setState,
+  setStepStatus,
+  shouldSkipLoginVerificationForCpaCallback,
+  shouldUseCustomRegistrationEmail,
+  sleepWithStop,
+  STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,
+  STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS,
+  throwIfStopped,
+});
+const step9Executor = self.MultiPageBackgroundStep9?.createStep9Executor({
+  addLog,
+  chrome,
+  closeConflictingTabsForSource,
+  completeStepFromBackground,
+  ensureContentScriptReadyOnTab,
+  getPanelMode,
+  getTabId,
+  isLocalhostOAuthCallbackUrl,
+  isTabAlive,
+  normalizeSub2ApiUrl,
+  rememberSourceLastUrl,
+  reuseOrCreateTab,
+  sendToContentScript,
+  sendToContentScriptResilient,
+  shouldBypassStep9ForLocalCpa,
+  SUB2API_STEP9_RESPONSE_TIMEOUT_MS,
+});
 
 async function requestOAuthUrlFromPanel(state, options = {}) {
   return panelBridge.requestOAuthUrlFromPanel(state, options);
@@ -6441,9 +6567,7 @@ async function resolveSignupEmailForFlow(state) {
 // ============================================================
 
 async function executeStep1() {
-  await addLog('步骤 1：正在打开 ChatGPT 官网...');
-  await ensureSignupEntryPageReady(1);
-  await completeStepFromBackground(1, {});
+  return step1Executor.executeStep1();
 }
 
 // ============================================================
@@ -6451,46 +6575,7 @@ async function executeStep1() {
 // ============================================================
 
 async function executeStep2(state) {
-  const resolvedEmail = await resolveSignupEmailForFlow(state);
-
-  let signupTabId = await getTabId('signup-page');
-  if (!signupTabId || !(await isTabAlive('signup-page'))) {
-    await addLog('步骤 2：未发现可用的注册页标签，正在重新打开 ChatGPT 官网...', 'warn');
-    signupTabId = (await ensureSignupEntryPageReady(2)).tabId;
-  } else {
-    await chrome.tabs.update(signupTabId, { active: true });
-    await ensureContentScriptReadyOnTab('signup-page', signupTabId, {
-      inject: SIGNUP_PAGE_INJECT_FILES,
-      injectSource: 'signup-page',
-      timeoutMs: 45000,
-      retryDelayMs: 900,
-      logMessage: '步骤 2：注册入口页内容脚本未就绪，正在等待页面恢复...',
-    });
-  }
-
-  const step2Result = await sendToContentScriptResilient('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 2,
-    source: 'background',
-    payload: { email: resolvedEmail },
-  }, {
-    timeoutMs: 20000,
-    retryDelayMs: 700,
-    logMessage: '步骤 2：官网注册入口正在切换，等待页面恢复后继续输入邮箱...',
-  });
-
-  if (step2Result?.error) {
-    throw new Error(step2Result.error);
-  }
-
-  if (!step2Result?.alreadyOnPasswordPage) {
-    await addLog(`步骤 2：邮箱 ${resolvedEmail} 已提交，正在等待进入密码页...`);
-  }
-
-  await ensureSignupPasswordPageReadyInTab(signupTabId, 2, {
-    skipUrlWait: Boolean(step2Result?.alreadyOnPasswordPage),
-  });
-  await completeStepFromBackground(2, {});
+  return step2Executor.executeStep2(state);
 }
 
 // ============================================================
@@ -6498,41 +6583,7 @@ async function executeStep2(state) {
 // ============================================================
 
 async function executeStep3(state) {
-  const resolvedEmail = state.email;
-  if (!resolvedEmail) {
-    throw new Error('缺少邮箱地址，请先完成步骤 2。');
-  }
-
-  const signupTabId = await getTabId('signup-page');
-  if (!signupTabId || !(await isTabAlive('signup-page'))) {
-    throw new Error('认证页面标签页已关闭，请先重新完成步骤 2。');
-  }
-
-  const password = state.customPassword || generatePassword();
-  await setPasswordState(password);
-
-  const accounts = state.accounts || [];
-  accounts.push({ email: resolvedEmail, password, createdAt: new Date().toISOString() });
-  await setState({ accounts });
-
-  await chrome.tabs.update(signupTabId, { active: true });
-  await ensureContentScriptReadyOnTab('signup-page', signupTabId, {
-    inject: SIGNUP_PAGE_INJECT_FILES,
-    injectSource: 'signup-page',
-    timeoutMs: 45000,
-    retryDelayMs: 900,
-    logMessage: '步骤 3：密码页内容脚本未就绪，正在等待页面恢复...',
-  });
-
-  await addLog(
-    `步骤 3：正在填写密码，邮箱为 ${resolvedEmail}，密码为${state.customPassword ? '自定义' : '自动生成'}（${password.length} 位）`
-  );
-  await sendToContentScript('signup-page', {
-    type: 'EXECUTE_STEP',
-    step: 3,
-    source: 'background',
-    payload: { email: resolvedEmail, password },
-  });
+  return step3Executor.executeStep3(state);
 }
 
 // ============================================================
@@ -7075,77 +7126,7 @@ async function resolveVerificationStep(step, state, mail, options = {}) {
 }
 
 async function executeStep4(state) {
-  const mail = getMailConfig(state);
-  if (mail.error) throw new Error(mail.error);
-  const stepStartedAt = Date.now();
-  const signupTabId = await getTabId('signup-page');
-  if (!signupTabId) {
-    throw new Error('认证页面标签页已关闭，无法继续步骤 4。');
-  }
-
-  await chrome.tabs.update(signupTabId, { active: true });
-  throwIfStopped();
-  await addLog('步骤 4：正在确认注册验证码页面是否就绪，必要时自动恢复密码页超时报错...');
-  const prepareResult = await sendToContentScriptResilient(
-    'signup-page',
-    {
-      type: 'PREPARE_SIGNUP_VERIFICATION',
-      step: 4,
-      source: 'background',
-      payload: { password: state.password || state.customPassword || '' },
-    },
-    {
-      timeoutMs: 30000,
-      retryDelayMs: 700,
-      logMessage: '步骤 4：认证页正在切换，等待页面重新就绪后继续检测...',
-    }
-  );
-
-  if (prepareResult && prepareResult.error) {
-    throw new Error(prepareResult.error);
-  }
-  if (prepareResult?.alreadyVerified) {
-    await completeStepFromBackground(4, {});
-    return;
-  }
-
-  if (shouldUseCustomRegistrationEmail(state)) {
-    await confirmCustomVerificationStepBypass(4);
-    return;
-  }
-
-  throwIfStopped();
-  if (mail.provider === HOTMAIL_PROVIDER || mail.provider === LUCKMAIL_PROVIDER || mail.provider === CLOUDFLARE_TEMP_EMAIL_PROVIDER) {
-    await addLog(`步骤 4：正在通过 ${mail.label} 轮询验证码...`);
-  } else {
-    await addLog(`步骤 4：正在打开${mail.label}...`);
-
-    // For mail tabs, only create if not alive — don't navigate (preserves login session)
-    const alive = await isTabAlive(mail.source);
-    if (alive) {
-      if (mail.navigateOnReuse) {
-        await reuseOrCreateTab(mail.source, mail.url, {
-          inject: mail.inject,
-          injectSource: mail.injectSource,
-        });
-      } else {
-        const tabId = await getTabId(mail.source);
-        await chrome.tabs.update(tabId, { active: true });
-      }
-    } else {
-      await reuseOrCreateTab(mail.source, mail.url, {
-        inject: mail.inject,
-        injectSource: mail.injectSource,
-      });
-    }
-  }
-
-  await resolveVerificationStep(4, state, mail, {
-    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : stepStartedAt,
-    requestFreshCodeFirst: mail.provider === HOTMAIL_PROVIDER ? false : true,
-    resendIntervalMs: mail.provider === HOTMAIL_PROVIDER ? 0 : STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,
-  });
-  return;
+  return step4Executor.executeStep4(state);
 }
 
 // ============================================================
@@ -7174,57 +7155,7 @@ async function waitForStep5ChatgptRedirect(tabId, timeoutMs = 15000) {
 }
 
 async function executeStep5(state) {
-  const { firstName, lastName } = generateRandomName();
-  const { year, month, day } = generateRandomBirthday();
-
-  await addLog(`步骤 5：已生成姓名 ${firstName} ${lastName}，生日 ${year}-${month}-${day}`);
-
-  let step5Result = null;
-  let step5TransportError = null;
-
-  try {
-    step5Result = await sendToContentScript('signup-page', {
-      type: 'EXECUTE_STEP',
-      step: 5,
-      source: 'background',
-      payload: { firstName, lastName, year, month, day },
-    });
-  } catch (err) {
-    // Cross-origin navigation (auth page → chatgpt.com) destroys the content
-    // script, causing a transport error. Capture it so we can check if the tab
-    // ended up on chatgpt.com onboarding.
-    if (isRetryableContentScriptTransportError(err)) {
-      step5TransportError = err;
-      console.log(LOG_PREFIX, '步骤 5：内容脚本通信中断，正在检查是否跳转到 ChatGPT 引导页...', err?.message);
-    } else {
-      throw err;
-    }
-  }
-
-  // Case 1: content script successfully detected chatgpt redirect before dying
-  if (step5Result?.chatgptOnboarding) {
-    await addLog('步骤 5：检测到 ChatGPT 引导页跳转，正在处理引导页跳过...');
-    await handleChatgptOnboardingSkip();
-    return;
-  }
-
-  if (step5Result?.chatgptHome) {
-    await addLog('步骤 5：检测到已进入 ChatGPT 页面，注册成功。', 'ok');
-    return;
-  }
-
-  // Case 2: content script died due to cross-origin navigation — check tab URL
-  if (step5TransportError) {
-    const signupTabId = await getTabId('signup-page');
-    const redirectedTab = await waitForStep5ChatgptRedirect(signupTabId);
-    if (redirectedTab) {
-      await addLog('步骤 5：内容脚本因页面跳转到 ChatGPT 而断开，正在处理引导页跳过...');
-      await handleChatgptOnboardingSkip(redirectedTab.id);
-      return;
-    }
-    // Not on chatgpt.com — re-throw the original error
-    throw step5TransportError;
-  }
+  return step5Executor.executeStep5(state);
 }
 
 async function handleChatgptOnboardingSkip(knownTabId) {
@@ -7479,186 +7410,15 @@ async function skipLoginVerificationStepsForCpaCallback() {
 }
 
 async function executeStep6(state) {
-  if (shouldSkipLoginVerificationForCpaCallback(state)) {
-    await skipLoginVerificationStepsForCpaCallback();
-    return;
-  }
-  if (!state.email) {
-    throw new Error('缺少邮箱地址，请先完成步骤 3。');
-  }
-
-  await runPreStep6CookieCleanup();
-
-  let attempt = 0;
-
-  while (true) {
-    throwIfStopped();
-    attempt += 1;
-    const currentState = attempt === 1 ? state : await getState();
-    const password = currentState.password || currentState.customPassword || '';
-    const oauthUrl = await refreshOAuthUrlBeforeStep6(currentState);
-
-    if (attempt === 1) {
-      await addLog('步骤 6：正在打开最新 OAuth 链接并登录...');
-    } else {
-      await addLog(`步骤 6：上一轮登录未进入验证码页，正在重新发起第 ${attempt} 轮登录尝试...`, 'warn');
-    }
-
-    await reuseOrCreateTab('signup-page', oauthUrl);
-
-    const result = await sendToContentScriptResilient(
-      'signup-page',
-      {
-        type: 'EXECUTE_STEP',
-        step: 6,
-        source: 'background',
-        payload: {
-          email: currentState.email,
-          password,
-        },
-      },
-      {
-        timeoutMs: 180000,
-        retryDelayMs: 700,
-        logMessage: '步骤 6：认证页正在切换，等待页面重新就绪后继续登录...',
-      }
-    );
-
-    if (result?.error) {
-      throw new Error(result.error);
-    }
-
-    if (isStep6SuccessResult(result)) {
-      await completeStepFromBackground(6, {
-        loginVerificationRequestedAt: result.loginVerificationRequestedAt || null,
-      });
-      return;
-    }
-
-    if (isStep6RecoverableResult(result)) {
-      const reasonMessage = result.message
-        || `当前停留在${getLoginAuthStateLabel(result.state)}，准备重新执行步骤 6。`;
-      await addLog(`步骤 6：${reasonMessage}`, 'warn');
-      continue;
-    }
-
-    throw new Error('步骤 6：认证页未返回可识别的登录结果。');
-  }
+  return step6Executor.executeStep6(state);
 }
 
 // ============================================================
 // Step 7: Poll login verification mail and submit the login code
 // ============================================================
 
-async function runStep7Attempt(state) {
-  const mail = getMailConfig(state);
-  if (mail.error) throw new Error(mail.error);
-  const stepStartedAt = Date.now();
-  const authTabId = await getTabId('signup-page');
-
-  if (authTabId) {
-    await chrome.tabs.update(authTabId, { active: true });
-  } else {
-    if (!state.oauthUrl) {
-      throw new Error('缺少登录用 OAuth 链接，请先完成步骤 6。');
-    }
-    await reuseOrCreateTab('signup-page', state.oauthUrl);
-  }
-
-  throwIfStopped();
-  await ensureStep7VerificationPageReady();
-  await addLog('步骤 7：登录验证码页面已就绪，开始获取验证码。', 'info');
-
-  if (shouldUseCustomRegistrationEmail(state)) {
-    await confirmCustomVerificationStepBypass(7);
-    return;
-  }
-
-  throwIfStopped();
-  if (mail.provider === HOTMAIL_PROVIDER || mail.provider === LUCKMAIL_PROVIDER || mail.provider === CLOUDFLARE_TEMP_EMAIL_PROVIDER) {
-    await addLog(`步骤 7：正在通过 ${mail.label} 轮询验证码...`);
-  } else {
-    await addLog(`步骤 7：正在打开${mail.label}...`);
-
-    const alive = await isTabAlive(mail.source);
-    if (alive) {
-      if (mail.navigateOnReuse) {
-        await reuseOrCreateTab(mail.source, mail.url, {
-          inject: mail.inject,
-          injectSource: mail.injectSource,
-        });
-      } else {
-        const tabId = await getTabId(mail.source);
-        await chrome.tabs.update(tabId, { active: true });
-      }
-    } else {
-      await reuseOrCreateTab(mail.source, mail.url, {
-        inject: mail.inject,
-        injectSource: mail.injectSource,
-      });
-    }
-  }
-
-  await resolveVerificationStep(7, state, mail, {
-    filterAfterTimestamp: mail.provider === HOTMAIL_PROVIDER ? undefined : Math.max(0, stepStartedAt - 60000),
-    requestFreshCodeFirst: false,
-    resendIntervalMs: mail.provider === HOTMAIL_PROVIDER ? 0 : STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS,
-  });
-}
-
-async function rerunStep6ForStep7Recovery() {
-  const currentState = await getState();
-  await addLog('步骤 7：正在回到步骤 6，重新发起登录验证码流程...', 'warn');
-  await executeStep6(currentState);
-  await sleepWithStop(3000);
-}
-
 async function executeStep7(state) {
-  if (shouldSkipLoginVerificationForCpaCallback(state)) {
-    await setState({
-      lastLoginCode: null,
-      loginVerificationRequestedAt: null,
-    });
-    await setStepStatus(7, 'skipped');
-    await addLog('步骤 7：当前已选择“第六步回调”，本轮无需获取登录验证码。', 'warn');
-    return;
-  }
-
-  let currentState = state;
-  let mailPollingAttempt = 1;
-  let lastMailPollingError = null;
-
-  while (true) {
-    try {
-      await runStep7Attempt(currentState);
-      return;
-    } catch (err) {
-      if (!isVerificationMailPollingError(err)) {
-        throw err;
-      }
-
-      lastMailPollingError = err;
-      if (mailPollingAttempt >= STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS) {
-        break;
-      }
-
-      mailPollingAttempt += 1;
-      await addLog(
-        `步骤 7：检测到邮箱轮询类失败，准备从步骤 6 重新开始（${mailPollingAttempt}/${STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS}）...`,
-        'warn'
-      );
-      await rerunStep6ForStep7Recovery();
-      currentState = await getState();
-    }
-  }
-
-  if (lastMailPollingError) {
-    throw new Error(
-      `步骤 7：登录验证码流程在 ${STEP7_MAIL_POLLING_RECOVERY_MAX_ATTEMPTS} 轮邮箱轮询恢复后仍未成功。最后一次原因：${lastMailPollingError.message}`
-    );
-  }
-
-  throw new Error('步骤 7：登录验证码流程未成功完成。');
+  return step7Executor.executeStep7(state);
 }
 
 // ============================================================
@@ -7680,6 +7440,34 @@ const STEP8_STRATEGIES = [
   { mode: 'content', strategy: 'dispatchClick', label: 'dispatch click' },
   { mode: 'debugger', label: 'debugger click retry' },
 ];
+
+function setWebNavListener(listener) {
+  webNavListener = listener;
+}
+
+function getWebNavListener() {
+  return webNavListener;
+}
+
+function setWebNavCommittedListener(listener) {
+  webNavCommittedListener = listener;
+}
+
+function getWebNavCommittedListener() {
+  return webNavCommittedListener;
+}
+
+function setStep8TabUpdatedListener(listener) {
+  step8TabUpdatedListener = listener;
+}
+
+function getStep8TabUpdatedListener() {
+  return step8TabUpdatedListener;
+}
+
+function setStep8PendingReject(handler) {
+  step8PendingReject = handler;
+}
 
 function cleanupStep8NavigationListeners() {
   if (webNavListener) {
@@ -7909,139 +7697,41 @@ function getStep8EffectLabel(effect) {
   }
 }
 
+const step8Executor = self.MultiPageBackgroundStep8?.createStep8Executor({
+  addLog,
+  chrome,
+  cleanupStep8NavigationListeners,
+  clickWithDebugger,
+  completeStepFromBackground,
+  ensureStep8SignupPageReady,
+  getStep8CallbackUrlFromNavigation,
+  getStep8CallbackUrlFromTabUpdate,
+  getStep8EffectLabel,
+  getTabId,
+  getWebNavCommittedListener,
+  getWebNavListener,
+  getStep8TabUpdatedListener,
+  isTabAlive,
+  prepareStep8DebuggerClick,
+  reloadStep8ConsentPage,
+  reuseOrCreateTab,
+  setStep8PendingReject,
+  setStep8TabUpdatedListener,
+  setWebNavCommittedListener,
+  setWebNavListener,
+  sleepWithStop,
+  STEP8_CLICK_RETRY_DELAY_MS,
+  STEP8_MAX_ROUNDS,
+  STEP8_READY_WAIT_TIMEOUT_MS,
+  STEP8_STRATEGIES,
+  throwIfStep8SettledOrStopped,
+  triggerStep8ContentStrategy,
+  waitForStep8ClickEffect,
+  waitForStep8Ready,
+});
+
 async function executeStep8(state) {
-  if (!state.oauthUrl) {
-    throw new Error('缺少登录用 OAuth 链接，请先完成步骤 6。');
-  }
-
-  await addLog('步骤 8：正在监听 localhost 回调地址...');
-
-  return new Promise((resolve, reject) => {
-    let resolved = false;
-    let signupTabId = null;
-
-    const cleanupListener = () => {
-      cleanupStep8NavigationListeners();
-      step8PendingReject = null;
-    };
-
-    const rejectStep8 = (error) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timeout);
-      cleanupListener();
-      reject(error);
-    };
-
-    const finalizeStep8Callback = (callbackUrl) => {
-      if (resolved || !callbackUrl) return;
-
-      resolved = true;
-      cleanupListener();
-      clearTimeout(timeout);
-
-      addLog(`步骤 8：已捕获 localhost 地址：${callbackUrl}`, 'ok').then(() => {
-        return completeStepFromBackground(8, { localhostUrl: callbackUrl });
-      }).then(() => {
-        resolve();
-      }).catch((err) => {
-        reject(err);
-      });
-    };
-
-    const timeout = setTimeout(() => {
-      rejectStep8(new Error('120 秒内未捕获到 localhost 回调跳转，步骤 8 的点击可能被拦截了。'));
-    }, 120000);
-
-    step8PendingReject = (error) => {
-      rejectStep8(error);
-    };
-
-    webNavListener = (details) => {
-      const callbackUrl = getStep8CallbackUrlFromNavigation(details, signupTabId);
-      finalizeStep8Callback(callbackUrl);
-    };
-
-    webNavCommittedListener = (details) => {
-      const callbackUrl = getStep8CallbackUrlFromNavigation(details, signupTabId);
-      finalizeStep8Callback(callbackUrl);
-    };
-
-    step8TabUpdatedListener = (tabId, changeInfo, tab) => {
-      const callbackUrl = getStep8CallbackUrlFromTabUpdate(tabId, changeInfo, tab, signupTabId);
-      finalizeStep8Callback(callbackUrl);
-    };
-
-    (async () => {
-      try {
-        throwIfStep8SettledOrStopped(resolved);
-        signupTabId = await getTabId('signup-page');
-        throwIfStep8SettledOrStopped(resolved);
-
-        if (signupTabId && await isTabAlive('signup-page')) {
-          await chrome.tabs.update(signupTabId, { active: true });
-          await addLog('步骤 8：已切回认证页，正在准备调试器点击...');
-        } else {
-          signupTabId = await reuseOrCreateTab('signup-page', state.oauthUrl);
-          await addLog('步骤 8：已重新打开认证页，正在准备调试器点击...');
-        }
-
-        throwIfStep8SettledOrStopped(resolved);
-        chrome.webNavigation.onBeforeNavigate.addListener(webNavListener);
-        chrome.webNavigation.onCommitted.addListener(webNavCommittedListener);
-        chrome.tabs.onUpdated.addListener(step8TabUpdatedListener);
-        await ensureStep8SignupPageReady(signupTabId, {
-          timeoutMs: 15000,
-          logMessage: '步骤 8：认证页内容脚本尚未就绪，正在等待页面恢复...',
-        });
-
-        for (let round = 1; round <= STEP8_MAX_ROUNDS && !resolved; round++) {
-          throwIfStep8SettledOrStopped(resolved);
-          const pageState = await waitForStep8Ready(signupTabId);
-          if (!pageState?.consentReady) {
-            await sleepWithStop(STEP8_CLICK_RETRY_DELAY_MS);
-            continue;
-          }
-
-          const strategy = STEP8_STRATEGIES[Math.min(round - 1, STEP8_STRATEGIES.length - 1)];
-
-          await addLog(`步骤 8：第 ${round}/${STEP8_MAX_ROUNDS} 轮尝试点击“继续”（${strategy.label}）...`);
-
-          if (strategy.mode === 'debugger') {
-            const clickTarget = await prepareStep8DebuggerClick(signupTabId);
-            throwIfStep8SettledOrStopped(resolved);
-            await clickWithDebugger(signupTabId, clickTarget?.rect);
-          } else {
-            await triggerStep8ContentStrategy(signupTabId, strategy.strategy);
-          }
-
-          if (resolved) {
-            return;
-          }
-
-          const effect = await waitForStep8ClickEffect(signupTabId, pageState.url);
-          if (resolved) {
-            return;
-          }
-
-          if (effect.progressed) {
-            await addLog(`步骤 8：检测到本次点击已生效，${getStep8EffectLabel(effect)}，继续等待 localhost 回调...`, 'info');
-            break;
-          }
-
-          if (round >= STEP8_MAX_ROUNDS) {
-            throw new Error(`步骤 8：连续 ${STEP8_MAX_ROUNDS} 轮点击“继续”后页面仍无反应。`);
-          }
-
-          await addLog(`步骤 8：${strategy.label} 本轮点击后页面无反应，正在刷新认证页后重试（下一轮 ${round + 1}/${STEP8_MAX_ROUNDS}）...`, 'warn');
-          await reloadStep8ConsentPage(signupTabId);
-          await sleepWithStop(STEP8_CLICK_RETRY_DELAY_MS);
-        }
-      } catch (err) {
-        rejectStep8(err);
-      }
-    })();
-  });
+  return step8Executor.executeStep8(state);
 }
 
 // ============================================================
@@ -8049,138 +7739,7 @@ async function executeStep8(state) {
 // ============================================================
 
 async function executeStep9(state) {
-  if (getPanelMode(state) === 'sub2api') {
-    return executeSub2ApiStep9(state);
-  }
-  return executeCpaStep9(state);
-}
-
-async function executeCpaStep9(state) {
-  if (state.localhostUrl && !isLocalhostOAuthCallbackUrl(state.localhostUrl)) {
-    throw new Error('步骤 8 捕获到的 localhost OAuth 回调地址无效，请重新执行步骤 8。');
-  }
-  if (!state.localhostUrl) {
-    throw new Error('缺少 localhost 回调地址，请先完成步骤 8。');
-  }
-  if (!state.vpsUrl) {
-    throw new Error('尚未填写 CPA 地址，请先在侧边栏输入。');
-  }
-
-  if (shouldBypassStep9ForLocalCpa(state)) {
-    await addLog('步骤 9：检测到本地 CPA，且当前策略为“跳过第9步”，本轮不再重复提交回调地址。', 'info');
-    await completeStepFromBackground(9, {
-      localhostUrl: state.localhostUrl,
-      verifiedStatus: 'local-auto',
-    });
-    return;
-  }
-
-  await addLog('步骤 9：正在打开 CPA 面板...');
-
-  const injectFiles = ['content/activation-utils.js', 'content/utils.js', 'content/vps-panel.js'];
-  let tabId = await getTabId('vps-panel');
-  const alive = tabId && await isTabAlive('vps-panel');
-
-  if (!alive) {
-    tabId = await reuseOrCreateTab('vps-panel', state.vpsUrl, {
-      inject: injectFiles,
-      reloadIfSameUrl: true,
-    });
-  } else {
-    await closeConflictingTabsForSource('vps-panel', state.vpsUrl, { excludeTabIds: [tabId] });
-    await chrome.tabs.update(tabId, { active: true });
-    await rememberSourceLastUrl('vps-panel', state.vpsUrl);
-  }
-
-  await ensureContentScriptReadyOnTab('vps-panel', tabId, {
-    inject: injectFiles,
-    timeoutMs: 45000,
-    retryDelayMs: 900,
-    logMessage: '步骤 9：CPA 面板仍在加载，正在重试连接...',
-  });
-
-  await addLog('步骤 9：正在填写回调地址...');
-  const result = await sendToContentScriptResilient('vps-panel', {
-    type: 'EXECUTE_STEP',
-    step: 9,
-    source: 'background',
-    payload: { localhostUrl: state.localhostUrl, vpsPassword: state.vpsPassword },
-  }, {
-    timeoutMs: 30000,
-    retryDelayMs: 700,
-    logMessage: '步骤 9：CPA 面板通信未就绪，正在等待页面恢复...',
-  });
-
-  if (result?.error) {
-    throw new Error(result.error);
-  }
-}
-
-async function executeSub2ApiStep9(state) {
-  if (state.localhostUrl && !isLocalhostOAuthCallbackUrl(state.localhostUrl)) {
-    throw new Error('步骤 8 捕获到的 localhost OAuth 回调地址无效，请重新执行步骤 8。');
-  }
-  if (!state.localhostUrl) {
-    throw new Error('缺少 localhost 回调地址，请先完成步骤 8。');
-  }
-  if (!state.sub2apiSessionId) {
-    throw new Error('缺少 SUB2API 会话信息，请重新执行步骤 1。');
-  }
-  if (!state.sub2apiEmail) {
-    throw new Error('尚未配置 SUB2API 登录邮箱，请先在侧边栏填写。');
-  }
-  if (!state.sub2apiPassword) {
-    throw new Error('尚未配置 SUB2API 登录密码，请先在侧边栏填写。');
-  }
-
-  const sub2apiUrl = normalizeSub2ApiUrl(state.sub2apiUrl);
-  const injectFiles = ['content/utils.js', 'content/sub2api-panel.js'];
-
-  await addLog('步骤 9：正在打开 SUB2API 后台...');
-
-  let tabId = await getTabId('sub2api-panel');
-  const alive = tabId && await isTabAlive('sub2api-panel');
-
-  if (!alive) {
-    tabId = await reuseOrCreateTab('sub2api-panel', sub2apiUrl, {
-      inject: injectFiles,
-      injectSource: 'sub2api-panel',
-      reloadIfSameUrl: true,
-    });
-  } else {
-    await closeConflictingTabsForSource('sub2api-panel', sub2apiUrl, { excludeTabIds: [tabId] });
-    await chrome.tabs.update(tabId, { active: true });
-    await rememberSourceLastUrl('sub2api-panel', sub2apiUrl);
-  }
-
-  await ensureContentScriptReadyOnTab('sub2api-panel', tabId, {
-    inject: injectFiles,
-    injectSource: 'sub2api-panel',
-  });
-
-  await addLog('步骤 9：正在向 SUB2API 提交回调并创建账号...');
-  const result = await sendToContentScript('sub2api-panel', {
-    type: 'EXECUTE_STEP',
-    step: 9,
-    source: 'background',
-    payload: {
-      localhostUrl: state.localhostUrl,
-      sub2apiUrl,
-      sub2apiEmail: state.sub2apiEmail,
-      sub2apiPassword: state.sub2apiPassword,
-      sub2apiGroupName: state.sub2apiGroupName,
-      sub2apiSessionId: state.sub2apiSessionId,
-      sub2apiOAuthState: state.sub2apiOAuthState,
-      sub2apiGroupId: state.sub2apiGroupId,
-      sub2apiDraftName: state.sub2apiDraftName,
-    },
-  }, {
-    responseTimeoutMs: SUB2API_STEP9_RESPONSE_TIMEOUT_MS,
-  });
-
-  if (result?.error) {
-    throw new Error(result.error);
-  }
+  return step9Executor.executeStep9(state);
 }
 
 // ============================================================
