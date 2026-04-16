@@ -1,0 +1,1 @@
+2026-04-16T19:30:20.931Z	qilianhai002uftuz9@2925.com	k#Hwe6zb$Pr2kW	failed	步骤 8：认证页进入了手机号页面，当前不是 OAuth 同意页，无法继续自动授权。
